@@ -75,12 +75,14 @@ export const callerListQuery = z
     cursor: z.string().optional(),
     limit: z.coerce.number().int().min(1).max(5000).optional(),
     withCount: withCountQuery,
+    search: z.string().optional(),
   })
   .transform((q) => ({
     projectId: q.projectId,
     cursor: q.cursor,
     limit: q.limit ?? 50,
     withCount: q.withCount,
+    search: q.search?.trim() || undefined,
   }));
 
 const logIngestFields = {
@@ -166,31 +168,60 @@ const logSortFieldSchema = z.enum([
 
 const logSortOrderSchema = z.enum(["asc", "desc"]);
 
-const logsListQueryRaw = z.object({
-  environment: z.string().optional(),
-  limit: z.coerce.number().int().min(1).max(1000).default(100),
-  cursor: z.string().optional(),
-  withCount: withCountQuery,
-  sort: logSortFieldSchema.optional(),
-  order: logSortOrderSchema.optional(),
-  method: z.string().optional(),
-  path: z.string().optional(),
-  search: z.string().optional(),
-  traceId: z.string().optional(),
-  trace_id: z.string().optional(),
-  service: z.string().optional(),
-  callerId: z.string().optional(),
-  caller_id: z.string().optional(),
-  statusCode: z.string().optional(),
-  date: z.string().optional(),
-  dateRange: z.string().optional(),
-});
+const logsListQueryRaw = z
+  .object({
+    environment: z.string().optional(),
+    limit: z.coerce.number().int().min(1).max(1000).default(100),
+    cursor: z.string().optional(),
+    withCount: withCountQuery,
+    sort: logSortFieldSchema.optional(),
+    order: logSortOrderSchema.optional(),
+    method: z.string().optional(),
+    path: z.string().optional(),
+    search: z.string().optional(),
+    traceId: z.string().optional(),
+    trace_id: z.string().optional(),
+    service: z.string().optional(),
+    callerId: z.string().optional(),
+    caller_id: z.string().optional(),
+    callerIds: z.string().optional(),
+    caller_ids: z.string().optional(),
+    callerSearch: z.string().optional(),
+    caller_search: z.string().optional(),
+    statusCode: z.string().optional(),
+    statusCodes: z.string().optional(),
+    status_codes: z.string().optional(),
+    date: z.string().optional(),
+    dateRange: z.string().optional(),
+  })
+  .superRefine((data, ctx) => {
+    const cis = data.callerIds ?? data.caller_ids;
+    if (cis?.trim()) {
+      for (const p of cis.split(",").map((x) => x.trim()).filter(Boolean)) {
+        if (!z.string().uuid().safeParse(p).success) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, message: "invalid uuid in callerIds", path: ["callerIds"] });
+        }
+      }
+    }
+    const scs = data.statusCodes ?? data.status_codes;
+    if (scs?.trim()) {
+      for (const p of scs.split(",").map((x) => x.trim()).filter(Boolean)) {
+        const n = parseInt(p, 10);
+        if (Number.isNaN(n) || n < 100 || n > 599) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, message: "invalid statusCodes", path: ["statusCodes"] });
+        }
+      }
+    }
+  });
 
 /** `timeZone` = IANA name from `X-Timezone` (see {@link resolveRequestTimezone}). */
 export function buildLogsListQuerySchema(timeZone: string) {
   return logsListQueryRaw.transform((q) => {
     const traceId = q.traceId ?? q.trace_id;
-    const callerId = q.callerId ?? q.caller_id;
+    const callerIdSingle = q.callerId ?? q.caller_id;
+    const callerIdsStr = q.callerIds ?? q.caller_ids;
+    const callerSearchRaw = q.callerSearch ?? q.caller_search;
+    const statusCodesStr = q.statusCodes ?? q.status_codes;
 
     const filter: {
       environment?: string;
@@ -204,9 +235,12 @@ export function buildLogsListQuerySchema(timeZone: string) {
       traceId?: string;
       service?: string;
       callerId?: string;
+      callerIds?: string[];
+      callerSearch?: string;
       statusCode?: number;
       statusCodeMin?: number;
       statusCodeMax?: number;
+      statusCodes?: number[];
       fromDate?: Date;
       toDate?: Date;
     } = {
@@ -222,9 +256,20 @@ export function buildLogsListQuerySchema(timeZone: string) {
     if (q.search) filter.search = q.search;
     if (traceId) filter.traceId = traceId;
     if (q.service) filter.service = q.service;
-    if (callerId) filter.callerId = callerId;
+    if (callerIdsStr?.trim()) {
+      filter.callerIds = [...new Set(callerIdsStr.split(",").map((x) => x.trim()).filter(Boolean))];
+    } else if (callerIdSingle) {
+      filter.callerId = callerIdSingle;
+    }
+    if (callerSearchRaw?.trim()) filter.callerSearch = callerSearchRaw.trim();
 
-    if (q.statusCode) {
+    if (statusCodesStr?.trim()) {
+      const nums = statusCodesStr
+        .split(",")
+        .map((x) => parseInt(x.trim(), 10))
+        .filter((n) => !Number.isNaN(n) && n >= 100 && n <= 599);
+      if (nums.length) filter.statusCodes = [...new Set(nums)];
+    } else if (q.statusCode) {
       if (q.statusCode.includes("-")) {
         const [a, b] = q.statusCode.split("-").map((x) => parseInt(x.trim(), 10));
         if (!Number.isNaN(a)) filter.statusCodeMin = a;

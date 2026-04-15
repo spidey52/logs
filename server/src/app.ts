@@ -236,6 +236,7 @@ export function createApp() {
       limit: q.limit,
       cursor,
       withCount: q.withCount,
+      search: q.search,
     });
     return c.json({ data: rows, nextCursor, total });
   });

@@ -85,12 +85,15 @@ export async function listCallers(opts?: {
   cursor?: string;
   limit?: number;
   withCount?: boolean;
+  /** Substring match on caller name or identifier */
+  search?: string;
 }): Promise<{ data: Caller[]; nextCursor: string | null; total: number | null }> {
   const { data } = await api.get("/api/v1/callers", {
     params: {
       projectId: opts?.projectId,
       cursor: opts?.cursor,
       limit: opts?.limit,
+      search: opts?.search?.trim() || undefined,
       ...(opts?.withCount ? { withCount: "true" } : {}),
     },
   });

@@ -1,4 +1,4 @@
-import { and, asc, avg, count, desc, eq, getTableColumns, gte, lte, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, avg, count, desc, eq, getTableColumns, gte, inArray, lte, or, sql, type SQL } from "drizzle-orm";
 import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import { encodeLogsListCursor, type DecodedLogsCursor, type LogSortField } from "../lib/logsCursor";
 import { startOfLocalDay } from "../lib/time";
@@ -28,11 +28,15 @@ export type LogFilter = {
   statusCode?: number;
   statusCodeMin?: number;
   statusCodeMax?: number;
+  statusCodes?: number[];
   path?: string;
   search?: string;
   traceId?: string;
   service?: string;
   callerId?: string;
+  callerIds?: string[];
+  /** Substring match on linked caller name or identifier (requires callers join). */
+  callerSearch?: string;
   fromDate?: Date;
   toDate?: Date;
 };
@@ -41,7 +45,9 @@ function logWhereParts(filter: LogFilter) {
   const parts = [eq(apiLogs.projectId, filter.projectId)];
   if (filter.environment) parts.push(eq(apiLogs.environment, filter.environment));
   if (filter.method) parts.push(eq(apiLogs.method, filter.method));
-  if (filter.statusCode != null) {
+  if (filter.statusCodes?.length) {
+    parts.push(inArray(apiLogs.statusCode, filter.statusCodes));
+  } else if (filter.statusCode != null) {
     parts.push(eq(apiLogs.statusCode, filter.statusCode));
   } else {
     if (filter.statusCodeMin != null) parts.push(gte(apiLogs.statusCode, filter.statusCodeMin));
@@ -59,7 +65,19 @@ function logWhereParts(filter: LogFilter) {
   }
   if (filter.traceId) parts.push(eq(apiLogs.traceId, filter.traceId));
   if (filter.service) parts.push(eq(apiLogs.service, filter.service));
-  if (filter.callerId) parts.push(eq(apiLogs.callerId, filter.callerId));
+  if (filter.callerIds?.length) {
+    parts.push(inArray(apiLogs.callerId, filter.callerIds));
+  } else if (filter.callerId) {
+    parts.push(eq(apiLogs.callerId, filter.callerId));
+  }
+  if (filter.callerSearch) {
+    parts.push(
+      or(
+        ilikeContains(callers.name, filter.callerSearch),
+        ilikeContains(callers.identifier, filter.callerSearch),
+      )!,
+    );
+  }
   if (filter.fromDate) parts.push(gte(apiLogs.timestamp, filter.fromDate));
   if (filter.toDate) parts.push(lte(apiLogs.timestamp, filter.toDate));
   return and(...parts);
@@ -141,7 +159,7 @@ export async function queryLogsPage(
 }> {
   const base = logWhereParts(filter);
   const { sort } = opts;
-  const useCallerJoin = sort.field === "caller";
+  const useCallerJoin = sort.field === "caller" || Boolean(filter.callerSearch?.trim());
   const keyset = opts.cursor ? keysetWhere(opts.cursor, sort.field) : undefined;
   const where = keyset ? and(base, keyset) : base;
   const ob = orderByClause(sort.field, sort.order);

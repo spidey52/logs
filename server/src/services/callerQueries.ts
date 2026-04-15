@@ -1,7 +1,17 @@
-import { and, desc, eq, getTableColumns, sql, type SQL } from "drizzle-orm";
+import { and, desc, eq, getTableColumns, or, sql, type SQL } from "drizzle-orm";
+import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import { db } from "../db";
 import { callers } from "../db/schema";
 import { encodeCursor } from "../lib/cursor";
+
+function escapeIlike(s: string): string {
+  return s.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_");
+}
+
+function ilikeContains(column: AnyPgColumn, raw: string): SQL {
+  const pat = `%${escapeIlike(raw)}%`;
+  return sql`${column} ILIKE ${pat} ESCAPE '\\'`;
+}
 
 function cursorPredicate(cursor: { at: Date; id: string }): SQL {
   return sql`ROW(${callers.createdAt}, ${callers.id}) < ROW(${cursor.at}::timestamptz, ${cursor.id}::uuid)`;
@@ -12,6 +22,8 @@ export async function queryCallersPage(opts: {
   limit: number;
   cursor: { at: Date; id: string } | null;
   withCount: boolean;
+  /** Substring match on name or identifier */
+  search?: string;
 }): Promise<{
   rows: (typeof callers.$inferSelect)[];
   nextCursor: string | null;
@@ -20,6 +32,10 @@ export async function queryCallersPage(opts: {
   const parts: SQL[] = [];
   if (opts.projectId) parts.push(eq(callers.projectId, opts.projectId));
   if (opts.cursor) parts.push(cursorPredicate(opts.cursor));
+  const q = opts.search?.trim();
+  if (q) {
+    parts.push(or(ilikeContains(callers.name, q), ilikeContains(callers.identifier, q))!);
+  }
   const where = parts.length ? and(...parts) : undefined;
 
   if (opts.withCount) {

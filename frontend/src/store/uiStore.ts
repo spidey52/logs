@@ -1,4 +1,5 @@
 import { createStore } from "@tanstack/store";
+import type { Caller } from "../types";
 
 /** Persisted in localStorage — used by TanStack Store only (no React Context). */
 export const PROJECT_ID_STORAGE_KEY = "api-logs:selected-project-id";
@@ -7,7 +8,9 @@ export type LogsFilters = {
   method: string;
   path: string;
   search: string;
-  statusCode: string;
+  statusCodes: number[];
+  /** Selected callers; API query uses their ids as `callerIds`. */
+  callerPicks: Caller[];
 };
 
 export type LogsSortState = {
@@ -38,8 +41,8 @@ export function readPersistedProjectId(): string | null {
  */
 export const uiStore = createStore<UiState>({
   selectedProjectId: readPersistedProjectId(),
-  logsWithCount: false,
-  logsFilters: { method: "", path: "", search: "", statusCode: "" },
+  logsWithCount: true,
+  logsFilters: { method: "", path: "", search: "", statusCodes: [], callerPicks: [] },
   logsSort: { ...defaultLogsSort },
 });
 
