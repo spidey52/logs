@@ -1,4 +1,5 @@
 import axios, { type AxiosInstance, isAxiosError } from "axios";
+import Redis from "ioredis";
 import type { ApiLogBatchItem, ApiLogEnvironment } from "./types.js";
 
 export type ApiLogExporterOptions = {
@@ -15,6 +16,7 @@ export type ApiLogExporterOptions = {
    * Optional shared axios instance (must have compatible `baseURL` / auth if you replace defaults).
    * If omitted, an instance is created with `baseUrl` and ingest headers.
    */
+  redisUrl: string;
   axios?: AxiosInstance;
   onError?: (err: Error, context: { phase: "upload" }) => void;
 };
@@ -46,16 +48,17 @@ export class ApiLogExporter {
   private readonly http: AxiosInstance;
   private readonly createCallers: boolean;
   private readonly onError?: ApiLogExporterOptions["onError"];
-
-  private queue: ApiLogBatchItem[] = [];
-  private interval: ReturnType<typeof setInterval> | undefined;
-  private drainChain: Promise<void> = Promise.resolve();
+  private readonly redis: Redis;
+  private readonly redisUrl: string;
 
   constructor(opts: ApiLogExporterOptions) {
     const baseURL = normalizeBaseUrl(opts.baseUrl);
     this.batchSize = Math.max(1, Math.min(1000, opts.batchSize ?? 100));
     this.createCallers = opts.createCallers ?? true;
     this.onError = opts.onError;
+
+    this.redisUrl = opts.redisUrl;
+    this.redis = new Redis(opts.redisUrl, { keyPrefix: "api-logs" });
 
     this.http =
       opts.axios ??
@@ -68,41 +71,39 @@ export class ApiLogExporter {
         },
       });
 
-    if (opts.flushIntervalMs != null && opts.flushIntervalMs > 0) {
-      this.interval = setInterval(() => {
-        void this.flushFullBatches();
-      }, opts.flushIntervalMs);
-    }
+    this.startFlushing();
   }
 
-  enqueue(item: ApiLogBatchItem): void {
-    this.queue.push(item);
-    if (this.queue.length >= this.batchSize) {
-      this.drainChain = this.drainChain.then(() => this.flushFullBatches());
-    }
+  async enqueue(item: ApiLogBatchItem): Promise<void> {
+    await this.redis.lpush("batch", JSON.stringify(item));
   }
 
   async flushFullBatches(): Promise<void> {
-    while (this.queue.length >= this.batchSize) {
-      const logs = this.queue.splice(0, this.batchSize);
-      await this.upload(logs);
-    }
+    // const logs = await this.redis.lrange("batch", 0, this.batchSize - 1);
+    // await this.upload(logs.map(JSON.parse) as ApiLogBatchItem[]);
   }
 
-  async shutdown(): Promise<void> {
-    if (this.interval !== undefined) {
-      clearInterval(this.interval);
-      this.interval = undefined;
-    }
-    await this.drainChain;
-    while (this.queue.length > 0) {
-      const logs = this.queue.splice(0, this.batchSize);
-      await this.upload(logs);
-    }
-  }
+  private async startFlushing(): Promise<void> {
+    const redis = new Redis(this.redisUrl, { keyPrefix: "api-logs" });
+    while (true) {
+      const log = await redis.brpop("batch", 0);
+      if (!log) continue;
 
-  get queued(): number {
-    return this.queue.length;
+      const batch: ApiLogBatchItem[] = [];
+
+      const logItem = JSON.parse(log[1]) as ApiLogBatchItem;
+      batch.push(logItem);
+
+      // get next batchSize logs
+      const nextLogs = await redis.lpop("batch", this.batchSize);
+
+      if (nextLogs?.length) {
+        batch.push(...nextLogs.map((log) => JSON.parse(log) as ApiLogBatchItem));
+      }
+
+      await this.upload(batch);
+
+    }
   }
 
   private async upload(logs: ApiLogBatchItem[]): Promise<void> {
@@ -114,7 +115,7 @@ export class ApiLogExporter {
     } catch (e) {
       const err = new Error(uploadErrorMessage(e));
       this.onError?.(err, { phase: "upload" });
-      this.queue.unshift(...logs);
+      // this.queue.unshift(...logs);
     }
   }
 }

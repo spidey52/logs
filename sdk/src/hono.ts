@@ -94,7 +94,7 @@ export function apiLogsHonoMiddleware(options: ApiLogsHonoMiddlewareOptions): Mi
             const textBody = await clonedRes.text();
             row.response_body = { text: textBody, }
           } catch (error) {
-            console.error(error);
+            // console.error(error);
             row.response_body = { error: "failed_to_parse_response_body" };
           }
         }
