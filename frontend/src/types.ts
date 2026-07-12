@@ -51,3 +51,37 @@ export type LogsStats = {
   environment: string;
   projectId: string;
 };
+
+export type LogHeadersRow = {
+  id?: string;
+  logId?: string;
+  requestContentType?: string | null;
+  requestAccept?: string | null;
+  requestAuthorization?: string | null;
+  requestOrigin?: string | null;
+  requestReferer?: string | null;
+  requestXForwardedFor?: string | null;
+  requestXRequestId?: string | null;
+  responseContentType?: string | null;
+  responseCacheControl?: string | null;
+  responseEtag?: string | null;
+  responseLocation?: string | null;
+  responseXRequestId?: string | null;
+  requestHeadersExtra?: Record<string, unknown>;
+  responseHeadersExtra?: Record<string, unknown>;
+  createdAt?: string;
+} | null;
+
+export type LogBodiesRow = {
+  id?: string;
+  logId?: string;
+  requestBody?: unknown;
+  responseBody?: unknown;
+  createdAt?: string;
+} | null;
+
+export type LogDetailData = {
+  log: ApiLog;
+  headers: LogHeadersRow;
+  body: LogBodiesRow;
+};

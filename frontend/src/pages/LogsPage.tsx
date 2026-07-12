@@ -1,68 +1,121 @@
-import CloseIcon from "@mui/icons-material/Close";
 import RefreshIcon from "@mui/icons-material/Refresh";
-import {
- Alert,
- Autocomplete,
- Box,
- Button,
- Chip,
- CircularProgress,
- Drawer,
- IconButton,
- LinearProgress,
- Paper,
- Stack,
- Table,
- TableBody,
- TableCell,
- TableContainer,
- TableHead,
- TableRow,
- TableSortLabel,
- TextField,
- Typography,
-} from "@mui/material";
-import { alpha } from "@mui/material/styles";
-import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
+import { Button, Chip, Stack, TextField, Typography } from "@mui/material";
+import type { GridColDef, GridSortModel } from "@mui/x-data-grid";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { shallow, useStore } from "@tanstack/react-store";
-import { useEffect, useMemo, useState } from "react";
+import moment from "moment";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { fetchLogDetail, listCallers, listLogs } from "../api/client";
+import { DataGridTable } from "../components/DataGridTable";
+import { FlexibleDatePicker, type DateRangeValue } from "../components/FlexibleDatePicker";
+import { LogDetailDialog } from "../components/LogDetailDialog";
 import { MethodChip } from "../components/MethodChip";
+import { MultiSelect, type MultiSelectGroup, type MultiSelectOption } from "../components/MultiSelect";
+import { PageHeader } from "../components/PageHeader";
 import { StatusCodeChip } from "../components/StatusCodeChip";
 import { useProjectWorkspace } from "../hooks/useProjectWorkspace";
-import { logsFiltersKey, logsSortKey, qk } from "../lib/queryKeys";
-import { setLogsFilters, setLogsSort, setLogsWithCount, uiStore, type LogsSortState } from "../store/uiStore";
-import type { Caller } from "../types";
+import { useToastOnChange } from "../hooks/useToastOnChange";
+import { logsFiltersKey, logsSortKey, PAGE_SIZE, qk } from "../lib/queryKeys";
+import { LOG_METHOD_OPTIONS, patchLogsFilters, setLogsSort, uiStore, type LogSearchField, type LogsSortState } from "../store/uiStore";
+import type { ApiLog, Caller } from "../types";
+
+const METHOD_OPTIONS: MultiSelectOption[] = LOG_METHOD_OPTIONS.map((m) => ({
+ value: m,
+ label: m,
+}));
+
+const SEARCH_FIELD_GROUPS: MultiSelectGroup<LogSearchField>[] = [
+ {
+  id: "request",
+  label: "Request",
+  options: [
+   { value: "path", label: "Path" },
+   { value: "host", label: "Host" },
+   { value: "userAgent", label: "User agent" },
+   { value: "error", label: "Error" },
+  ],
+ },
+ {
+  id: "identity",
+  label: "Identity",
+  options: [
+   { value: "ip", label: "IP address" },
+   { value: "service", label: "Service" },
+  ],
+ },
+ {
+  id: "tracing",
+  label: "Tracing",
+  options: [
+   { value: "requestId", label: "Request ID" },
+   { value: "traceId", label: "Trace ID" },
+  ],
+ },
+];
 
 function MsChip({ ms }: { ms: number }) {
  const color = ms < 120 ? ("success" as const) : ms < 400 ? ("primary" as const) : ms < 1500 ? ("warning" as const) : ("error" as const);
  return <Chip label={`${ms} ms`} size='small' color={color} variant='outlined' sx={{ fontWeight: 700, fontVariantNumeric: "tabular-nums" }} />;
 }
 
-/** Table order after # column: caller, path, status, method, duration, time */
-const SORT_COLUMNS: { id: LogsSortState["field"]; label: string }[] = [
- { id: "caller", label: "Caller" },
- { id: "path", label: "Path" },
- { id: "status_code", label: "Status" },
- { id: "method", label: "Method" },
- { id: "response_time_ms", label: "Duration" },
- { id: "timestamp", label: "Time" },
+const STATUS_CODE_GROUPS: MultiSelectGroup[] = [
+ {
+  id: "info",
+  label: "Informational",
+  options: [
+   { value: "100", label: "100 Continue" },
+   { value: "101", label: "101 Switching Protocols" },
+  ],
+ },
+ {
+  id: "success",
+  label: "Good request",
+  options: [
+   { value: "200", label: "200 OK" },
+   { value: "201", label: "201 Created" },
+   { value: "202", label: "202 Accepted" },
+   { value: "204", label: "204 No Content" },
+  ],
+ },
+ {
+  id: "redirect",
+  label: "Redirect",
+  options: [
+   { value: "301", label: "301 Moved Permanently" },
+   { value: "302", label: "302 Found" },
+   { value: "304", label: "304 Not Modified" },
+   { value: "307", label: "307 Temporary Redirect" },
+  ],
+ },
+ {
+  id: "client",
+  label: "Bad request",
+  options: [
+   { value: "400", label: "400 Bad Request" },
+   { value: "401", label: "401 Unauthorized" },
+   { value: "403", label: "403 Forbidden" },
+   { value: "404", label: "404 Not Found" },
+   { value: "405", label: "405 Method Not Allowed" },
+   { value: "409", label: "409 Conflict" },
+   { value: "422", label: "422 Unprocessable Entity" },
+   { value: "429", label: "429 Too Many Requests" },
+  ],
+ },
+ {
+  id: "server",
+  label: "Server error",
+  options: [
+   { value: "500", label: "500 Internal Server Error" },
+   { value: "502", label: "502 Bad Gateway" },
+   { value: "503", label: "503 Service Unavailable" },
+   { value: "504", label: "504 Gateway Timeout" },
+  ],
+ },
 ];
 
 function defaultOrderForField(field: LogsSortState["field"]): "asc" | "desc" {
  if (field === "timestamp" || field === "status_code" || field === "response_time_ms") return "desc";
  return "asc";
-}
-
-const STATUS_SUGGESTIONS = [100, 101, 200, 201, 202, 204, 301, 302, 304, 307, 400, 401, 403, 404, 405, 409, 422, 429, 500, 502, 503, 504];
-
-function normalizeStatusValues(vals: readonly (string | number)[]): number[] {
- const set = new Set<number>();
- for (const x of vals) {
-  const n = typeof x === "number" ? x : Number.parseInt(String(x).trim(), 10);
-  if (!Number.isNaN(n) && n >= 100 && n <= 599) set.add(n);
- }
- return [...set].sort((a, b) => a - b);
 }
 
 function useDebouncedValue<T>(value: T, ms: number): T {
@@ -74,60 +127,110 @@ function useDebouncedValue<T>(value: T, ms: number): T {
  return v;
 }
 
+const SORTABLE_FIELDS = new Set<LogsSortState["field"]>(["caller", "path", "status_code", "method", "response_time_ms", "timestamp"]);
+
 export function LogsPage() {
  const { selected } = useProjectWorkspace();
- const applied = useStore(uiStore, (s) => s.logsFilters, shallow);
+ const filters = useStore(uiStore, (s) => s.logsFilters, shallow);
  const logsSort = useStore(uiStore, (s) => s.logsSort, shallow);
- const withCount = useStore(uiStore, (s) => s.logsWithCount);
 
- const [draft, setDraft] = useState(applied);
- const filtersKey = useMemo(() => logsFiltersKey(applied), [applied]);
+ const [searchInput, setSearchInput] = useState(filters.search);
+ const debouncedSearch = useDebouncedValue(searchInput, 300);
+
+ const [page, setPage] = useState(0);
+ const filtersKey = useMemo(() => logsFiltersKey(filters), [filters]);
  const sortKey = useMemo(() => logsSortKey(logsSort), [logsSort]);
+ const offset = page * PAGE_SIZE;
 
  useEffect(() => {
-  setDraft(applied);
- }, [applied]);
-
- const [callerInput, setCallerInput] = useState("");
- const debouncedCallerSearch = useDebouncedValue(callerInput, 280);
+  setSearchInput(filters.search);
+ }, [filters.search]);
 
  useEffect(() => {
-  setCallerInput("");
- }, [selected?.id]);
+  if (debouncedSearch === filters.search) return;
+  patchLogsFilters({ search: debouncedSearch });
+ }, [debouncedSearch, filters.search]);
 
- const callersSearchQ = useQuery({
-  queryKey: selected ? qk.callersSearch(selected.id, debouncedCallerSearch) : ["callers", "search", "__none", ""],
-  queryFn: () =>
-   listCallers({
-    projectId: selected!.id,
+ useEffect(() => {
+  setPage(0);
+ }, [filtersKey, sortKey, selected?.id]);
+
+ const callersById = useRef(new Map<string, Caller>());
+ useEffect(() => {
+  for (const c of filters.callerPicks) callersById.current.set(c.id, c);
+ }, [filters.callerPicks]);
+
+ const callerIds = useMemo(() => filters.callerPicks.map((c) => c.id), [filters.callerPicks]);
+ const callerSelectedOptions = useMemo(
+  () =>
+   filters.callerPicks.map((c) => ({
+    value: c.id,
+    label: c.name,
+    description: c.identifier,
+   })),
+  [filters.callerPicks],
+ );
+ const statusValues = useMemo(() => filters.statusCodes.map(String), [filters.statusCodes]);
+
+ const loadCallerOptions = useCallback(
+  async (query: string): Promise<MultiSelectOption[]> => {
+   if (!selected) return [];
+   const { data } = await listCallers({
+    projectId: selected.id,
     limit: 40,
-    search: debouncedCallerSearch.trim() || undefined,
-   }),
-  enabled: !!selected,
- });
+    search: query.trim() || undefined,
+   });
+   for (const c of data) callersById.current.set(c.id, c);
+   return data.map((c) => ({
+    value: c.id,
+    label: c.name,
+    description: c.identifier,
+   }));
+  },
+  [selected],
+ );
 
- const logsQ = useInfiniteQuery({
-  queryKey: selected ? qk.logsInfinite(selected.id, filtersKey, sortKey, withCount) : ["logs", "infinite", "__none", "", "", false],
-  queryFn: ({ pageParam }) =>
-   listLogs(selected!.apiKey, selected!.environment, {
-    limit: "50",
-    cursor: pageParam,
-    withCount: withCount && pageParam === undefined ? "true" : undefined,
-    method: applied.method.trim() || undefined,
-    path: applied.path.trim() || undefined,
-    search: applied.search.trim() || undefined,
-    statusCodes: applied.statusCodes.length ? [...applied.statusCodes].sort((a, b) => a - b).join(",") : undefined,
-    callerIds: applied.callerPicks.length ? applied.callerPicks.map((c) => c.id).join(",") : undefined,
+ /** Avoid COUNT(*) OVER() on every page flip — only count when filters/sort change. */
+ const totalsCache = useRef(new Map<string, number>());
+ const totalKey = `${selected?.id ?? ""}|${filtersKey}|${sortKey}`;
+
+ const logsQ = useQuery({
+  queryKey: selected ? qk.logsPage(selected.id, filtersKey, sortKey, offset) : ["logs", "page", "__none"],
+  queryFn: async () => {
+   const needCount = !totalsCache.current.has(totalKey);
+   const res = await listLogs(selected!.apiKey, selected!.environment, {
+    limit: PAGE_SIZE,
+    offset,
+    withCount: needCount ? 1 : undefined,
+    dateFrom: filters.dateFrom,
+    dateTo: filters.dateTo,
+    methods: filters.methods.length ? filters.methods.join(",") : undefined,
+    search: filters.search.trim() || undefined,
+    searchFields: filters.search.trim() && filters.searchFields.length ? filters.searchFields.join(",") : undefined,
+    statusCodes: filters.statusCodes.length ? [...filters.statusCodes].sort((a, b) => a - b).join(",") : undefined,
+    callerIds: filters.callerPicks.length ? filters.callerPicks.map((c) => c.id).join(",") : undefined,
     sort: logsSort.field,
     order: logsSort.order,
-   }),
-  initialPageParam: undefined as string | undefined,
-  getNextPageParam: (last) => last.nextCursor ?? undefined,
+   });
+   if (typeof res.total === "number") totalsCache.current.set(totalKey, res.total);
+   return {
+    ...res,
+    total: res.total ?? totalsCache.current.get(totalKey) ?? 0,
+   };
+  },
   enabled: !!selected,
+  placeholderData: keepPreviousData,
  });
 
- const rows = logsQ.data?.pages.flatMap((p) => p.data) ?? [];
- const total = logsQ.data?.pages[0]?.total ?? null;
+ const rows = logsQ.data?.data ?? [];
+ const total = logsQ.data?.total ?? totalsCache.current.get(totalKey) ?? 0;
+ // Keep previous rows visible while refetching — overlay only on cold loads
+ const gridLoading = logsQ.isPending || (logsQ.isFetching && !logsQ.isPlaceholderData);
+
+ useEffect(() => {
+  const maxPage = Math.max(0, Math.ceil(total / PAGE_SIZE) - 1);
+  if (page > maxPage) setPage(maxPage);
+ }, [total, page]);
 
  const [detailId, setDetailId] = useState<string | null>(null);
 
@@ -137,232 +240,245 @@ export function LogsPage() {
   enabled: !!selected && !!detailId,
  });
 
- const applyFilters = () => {
-  setLogsFilters(draft);
- };
+ const sortModel: GridSortModel = [{ field: logsSort.field, sort: logsSort.order }];
 
- const requestSort = (field: LogsSortState["field"]) => {
-  if (logsSort.field === field) {
-   setLogsSort({ field, order: logsSort.order === "asc" ? "desc" : "asc" });
-  } else {
-   setLogsSort({ field, order: defaultOrderForField(field) });
+ const onSortModelChange = (model: GridSortModel) => {
+  const next = model[0];
+  if (!next?.field || !SORTABLE_FIELDS.has(next.field as LogsSortState["field"])) {
+   setLogsSort({ field: "timestamp", order: "desc" });
+   return;
   }
+  const field = next.field as LogsSortState["field"];
+  const order = (next.sort ?? defaultOrderForField(field)) as "asc" | "desc";
+  setLogsSort({ field, order });
  };
 
- const openDetail = (id: string) => setDetailId(id);
+ const columns = useMemo<GridColDef<ApiLog>[]>(
+  () => [
+   {
+    field: "index",
+    headerName: "#",
+    width: 56,
+    sortable: false,
+    filterable: false,
+    disableColumnMenu: true,
+    valueGetter: (_v, row) => {
+     const idx = rows.findIndex((r) => r.id === row.id);
+     return idx >= 0 ? offset + idx + 1 : "";
+    },
+    cellClassName: "mono-muted",
+   },
+   {
+    field: "caller",
+    headerName: "Caller",
+    flex: 1,
+    minWidth: 140,
+    valueGetter: (_v, row) => row.caller?.name ?? "",
+    renderCell: (params) =>
+     params.row.caller ? (
+      <Chip label={params.row.caller.name} size='small' color='secondary' variant='outlined' />
+     ) : (
+      <Typography variant='caption' color='text.secondary'>
+       —
+      </Typography>
+     ),
+   },
+   {
+    field: "path",
+    headerName: "Path",
+    flex: 2,
+    minWidth: 200,
+    renderCell: (params) => (
+     <Typography variant='body2' sx={{ fontFamily: "ui-monospace, monospace", wordBreak: "break-all" }}>
+      {params.value}
+     </Typography>
+    ),
+   },
+   {
+    field: "status_code",
+    headerName: "Status",
+    width: 100,
+    valueGetter: (_v, row) => row.statusCode,
+    renderCell: (params) => <StatusCodeChip code={params.row.statusCode} />,
+   },
+   {
+    field: "method",
+    headerName: "Method",
+    width: 100,
+    renderCell: (params) => <MethodChip method={params.value} />,
+   },
+   {
+    field: "response_time_ms",
+    headerName: "Duration",
+    width: 110,
+    valueGetter: (_v, row) => row.responseTimeMs,
+    renderCell: (params) => <MsChip ms={params.row.responseTimeMs} />,
+   },
+   {
+    field: "timestamp",
+    headerName: "Time",
+    width: 200,
+    valueGetter: (_v, row) => row.timestamp,
+    renderCell: (params) => (
+     <Typography variant='body2' sx={{ whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }}>
+      {moment(params.row.timestamp).format("MMM D, YYYY h:mm:ss A")}
+     </Typography>
+    ),
+   },
+  ],
+  [offset, rows],
+ );
+
  const closeDetail = () => setDetailId(null);
 
- const loading = logsQ.isLoading;
- const refetching = logsQ.isFetching && !logsQ.isLoading;
  const listErr = logsQ.error instanceof Error ? logsQ.error.message : logsQ.error ? String(logsQ.error) : null;
+ const detailErr = detailQ.isError ? (detailQ.error instanceof Error ? detailQ.error.message : "Failed to load detail") : null;
+
+ useToastOnChange(listErr, "error");
+ useToastOnChange(detailErr, "error");
+
+ const dateValue = useMemo<DateRangeValue>(() => {
+  const from = moment(filters.dateFrom, "YYYY-MM-DD", true);
+  const to = moment(filters.dateTo, "YYYY-MM-DD", true);
+  const start = (from.isValid() ? from : moment()).startOf("day").toDate();
+  const end = (to.isValid() ? to : moment(start)).endOf("day").toDate();
+  return { start, end };
+ }, [filters.dateFrom, filters.dateTo]);
+
+ const onDateChange = useCallback((next: DateRangeValue) => {
+  patchLogsFilters({
+   dateFrom: moment(next.start).format("YYYY-MM-DD"),
+   dateTo: moment(next.end).format("YYYY-MM-DD"),
+  });
+ }, []);
+
+ const onDateModeChange = useCallback((dateMode: "single" | "range") => {
+  patchLogsFilters({ dateMode });
+ }, []);
+
+ const onStatusChange = useCallback((codes: string[]) => {
+  patchLogsFilters({ statusCodes: codes.map(Number).sort((a, b) => a - b) });
+ }, []);
+
+ const onCallersChange = useCallback((ids: string[]) => {
+  patchLogsFilters({
+   callerPicks: ids.map((id) => callersById.current.get(id)).filter((c): c is Caller => Boolean(c)),
+  });
+ }, []);
+
+ const onPaginationModelChange = useCallback(
+  (m: { page: number; pageSize: number }) => {
+   const maxPage = Math.max(0, Math.ceil(total / PAGE_SIZE) - 1);
+   setPage(Math.min(m.page, maxPage));
+  },
+  [total],
+ );
+
+ const gridSx = useMemo(
+  () => ({
+   "& .mono-muted": {
+    color: "text.secondary",
+    fontVariantNumeric: "tabular-nums",
+   },
+  }),
+  [],
+ );
+
+ const refreshLogs = useCallback(() => {
+  totalsCache.current.delete(totalKey);
+  void logsQ.refetch();
+ }, [logsQ, totalKey]);
 
  return (
-  <Stack spacing={2}>
+  <Stack spacing={2} sx={{ flex: 1, minHeight: 0, height: "100%" }}>
+   <PageHeader title='API logs'>
+    {selected ? (
+     <>
+      <FlexibleDatePicker
+       value={dateValue}
+       onChange={onDateChange}
+       mode={filters.dateMode}
+       onModeChange={onDateModeChange}
+       maxDate={moment().toDate()}
+       width={200}
+      />
+      <MultiSelect
+       label='Methods'
+       options={METHOD_OPTIONS}
+       value={filters.methods}
+       onChange={(methods) => patchLogsFilters({ methods })}
+       searchPlaceholder='Search methods'
+       width={130}
+       menuWidth={220}
+      />
+      <MultiSelect label='Status' groups={STATUS_CODE_GROUPS} value={statusValues} onChange={onStatusChange} searchPlaceholder='Search status codes' width={130} menuWidth={280} />
+      <MultiSelect
+       label='Callers'
+       value={callerIds}
+       selectedOptions={callerSelectedOptions}
+       onChange={onCallersChange}
+       loadOptions={loadCallerOptions}
+       searchPlaceholder='Search name, identifier…'
+       width={150}
+       menuWidth={280}
+       disabled={!selected}
+      />
+      <MultiSelect<LogSearchField>
+       label='Search in'
+       groups={SEARCH_FIELD_GROUPS}
+       value={filters.searchFields}
+       onChange={(searchFields) => patchLogsFilters({ searchFields })}
+       searchPlaceholder='Search fields'
+       width={140}
+       menuWidth={260}
+      />
+      <TextField
+       size='small'
+       value={searchInput}
+       onChange={(e) => setSearchInput(e.target.value)}
+       placeholder='Search logs…'
+       sx={{
+        width: 180,
+        minWidth: 180,
+        maxWidth: 180,
+        flexShrink: 0,
+        "& .MuiOutlinedInput-root": { height: 36 },
+        "& .MuiInputBase-input": { fontSize: "0.8125rem" },
+       }}
+      />
+      <Button variant='outlined' startIcon={<RefreshIcon />} onClick={refreshLogs} disabled={!logsQ.data} sx={{ borderRadius: 1, height: 36, flexShrink: 0 }}>
+       Refresh
+      </Button>
+     </>
+    ) : null}
+   </PageHeader>
+
    {!selected && (
-    <Alert severity='info' sx={{ borderRadius: 1 }}>
-     Choose a project in the top bar to load logs (uses that project&apos;s API key).
-    </Alert>
-   )}
-   {listErr && (
-    <Alert severity='error' onClose={() => logsQ.refetch()}>
-     {listErr}
-    </Alert>
+    <Typography variant='body2' color='text.secondary'>
+     Choose a project in the top bar to load logs.
+    </Typography>
    )}
 
    {selected && (
-    <Paper sx={{ p: 1.5, borderRadius: 1 }}>
-     <Stack spacing={2}>
-      <Stack direction={{ xs: "column", md: "row" }} spacing={2} flexWrap='wrap' useFlexGap alignItems={{ md: "center" }}>
-       <TextField size='small' label='Method' value={draft.method} onChange={(e) => setDraft((d) => ({ ...d, method: e.target.value }))} placeholder='GET' sx={{ minWidth: 120 }} />
-       <TextField size='small' label='Path contains' value={draft.path} onChange={(e) => setDraft((d) => ({ ...d, path: e.target.value }))} sx={{ flex: 1, minWidth: 180 }} />
-       <TextField size='small' label='Search' value={draft.search} onChange={(e) => setDraft((d) => ({ ...d, search: e.target.value }))} placeholder='path, IP, UA…' sx={{ flex: 1, minWidth: 180 }} />
-       <Autocomplete
-        multiple
-        freeSolo
-        options={STATUS_SUGGESTIONS}
-        value={draft.statusCodes}
-        onChange={(_, v) => setDraft((d) => ({ ...d, statusCodes: normalizeStatusValues(v) }))}
-        getOptionLabel={(o) => String(o)}
-        filterSelectedOptions
-        sx={{ minWidth: 220, maxWidth: 360 }}
-        renderTags={(value, getTagProps) => value.map((code, index) => <Chip {...getTagProps({ index })} key={code} label={String(code)} size='small' variant='outlined' />)}
-        renderInput={(params) => <TextField {...params} size='small' label='Status codes' placeholder='e.g. 200, 404' />}
-       />
-       <Autocomplete<Caller, true, false, false>
-        multiple
-        options={callersSearchQ.data?.data ?? []}
-        value={draft.callerPicks}
-        onChange={(_, v) => setDraft((d) => ({ ...d, callerPicks: v }))}
-        isOptionEqualToValue={(a, b) => a.id === b.id}
-        getOptionLabel={(c) => `${c.name} · ${c.identifier}`}
-        filterOptions={(x) => x}
-        loading={callersSearchQ.isFetching}
-        inputValue={callerInput}
-        onInputChange={(_, v, reason) => {
-         if (reason === "input" || reason === "clear") setCallerInput(v);
-        }}
-        sx={{ flex: 1, minWidth: 280, maxWidth: 520 }}
-        renderOption={(props, c) => (
-         <li {...props} key={c.id}>
-          <Stack spacing={0.25} sx={{ py: 0.5 }}>
-           <Typography variant='body2'>{c.name}</Typography>
-           <Typography variant='caption' color='text.secondary' sx={{ fontFamily: "ui-monospace, monospace" }}>
-            {c.identifier}
-           </Typography>
-           <Typography variant='caption' color='text.disabled' sx={{ fontFamily: "ui-monospace, monospace", fontSize: "0.65rem" }}>
-            {c.id}
-           </Typography>
-          </Stack>
-         </li>
-        )}
-        renderTags={(value, getTagProps) => value.map((c, index) => <Chip {...getTagProps({ index })} key={c.id} label={c.name} size='small' color='secondary' variant='outlined' />)}
-        renderInput={(params) => <TextField {...params} size='small' label='Callers' placeholder='Search name, id, identifier…' />}
-       />
-       <Stack direction='row' alignItems='center' spacing={1} flexWrap='wrap' useFlexGap sx={{ ml: { md: "auto" } }}>
-        <Button size='small' variant='outlined' onClick={() => setLogsWithCount(!withCount)}>
-         Match count: {withCount ? "on" : "off"}
-        </Button>
-        {withCount && (
-         <Typography variant='caption' color='text.secondary' sx={{ whiteSpace: "nowrap" }}>
-          {logsQ.isFetching && total == null ? "…" : total != null ? `Matching ${total.toLocaleString()}` : "—"}
-         </Typography>
-        )}
-       </Stack>
-       <Button variant='outlined' startIcon={<RefreshIcon />} onClick={() => void logsQ.refetch()} disabled={!logsQ.data} sx={{ borderRadius: 1, height: 36 }}>
-        Refresh
-       </Button>
-       <Button variant='contained' onClick={applyFilters} disabled={loading} sx={{ borderRadius: 1, height: 36 }}>
-        Apply
-       </Button>
-      </Stack>
-     </Stack>
-    </Paper>
+    <DataGridTable
+     rows={rows}
+     columns={columns}
+     loading={gridLoading}
+     emptyMessage='No logs for these filters.'
+     paginationMode='server'
+     sortingMode='server'
+     rowCount={total}
+     paginationModel={{ page, pageSize: PAGE_SIZE }}
+     onPaginationModelChange={onPaginationModelChange}
+     pageSizeOptions={[PAGE_SIZE]}
+     sortModel={sortModel}
+     onSortModelChange={onSortModelChange}
+     onRowClick={(params) => setDetailId(String(params.id))}
+     sx={gridSx}
+    />
    )}
 
-   <TableContainer component={Paper} sx={{ borderRadius: 1, position: "relative" }}>
-    {refetching && <LinearProgress sx={{ position: "absolute", top: 0, left: 0, right: 0, height: 2, borderRadius: "4px 4px 0 0" }} />}
-    <Table size='small'>
-     <TableHead>
-      <TableRow>
-       <TableCell sx={{ width: 48, fontWeight: 700 }}>#</TableCell>
-       {SORT_COLUMNS.map((col) => (
-        <TableCell key={col.id} sortDirection={logsSort.field === col.id ? logsSort.order : false}>
-         <TableSortLabel
-          active={logsSort.field === col.id}
-          direction={logsSort.field === col.id ? logsSort.order : "asc"}
-          onClick={(e) => {
-           e.stopPropagation();
-           requestSort(col.id);
-          }}
-         >
-          {col.label}
-         </TableSortLabel>
-        </TableCell>
-       ))}
-      </TableRow>
-     </TableHead>
-     <TableBody>
-      {rows.map((r, idx) => (
-       <TableRow key={r.id} hover onClick={() => openDetail(r.id)} sx={{ cursor: "pointer", "&:hover": { bgcolor: alpha("#1d4ed8", 0.04) } }}>
-        <TableCell sx={{ fontVariantNumeric: "tabular-nums", color: "text.secondary" }}>{idx + 1}</TableCell>
-        <TableCell>
-         {r.caller ? (
-          <Chip label={r.caller.name} size='small' color='secondary' variant='outlined' />
-         ) : (
-          <Typography variant='caption' color='text.secondary'>
-           —
-          </Typography>
-         )}
-        </TableCell>
-        <TableCell>
-         <Typography variant='body2' sx={{ fontFamily: "ui-monospace, monospace", wordBreak: "break-all" }}>
-          {r.path}
-         </Typography>
-        </TableCell>
-        <TableCell>
-         <StatusCodeChip code={r.statusCode} />
-        </TableCell>
-        <TableCell>
-         <MethodChip method={r.method} />
-        </TableCell>
-        <TableCell>
-         <MsChip ms={r.responseTimeMs} />
-        </TableCell>
-        <TableCell sx={{ whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }}>{new Date(r.timestamp).toLocaleString()}</TableCell>
-       </TableRow>
-      ))}
-      {selected && !loading && rows.length === 0 && (
-       <TableRow>
-        <TableCell colSpan={7}>
-         <Typography align='center' color='text.secondary' py={3}>
-          No logs for these filters.
-         </Typography>
-        </TableCell>
-       </TableRow>
-      )}
-     </TableBody>
-    </Table>
-   </TableContainer>
-
-   {loading && (
-    <Box display='flex' justifyContent='center'>
-     <CircularProgress size={32} />
-    </Box>
-   )}
-
-   {logsQ.hasNextPage && (
-    <Button variant='outlined' onClick={() => logsQ.fetchNextPage()} disabled={logsQ.isFetchingNextPage} sx={{ alignSelf: "center" }}>
-     {logsQ.isFetchingNextPage ? "Loading…" : "Load more"}
-    </Button>
-   )}
-
-   <Drawer anchor='right' open={detailId != null} onClose={closeDetail} PaperProps={{ sx: { width: { xs: "100%", sm: 440 }, borderRadius: "6px 0 0 6px" } }}>
-    <Stack direction='row' alignItems='center' sx={{ px: 2, py: 1.5, borderBottom: 1, borderColor: "divider" }}>
-     <Typography variant='subtitle1' sx={{ flex: 1, fontWeight: 800 }}>
-      Log detail
-     </Typography>
-     <IconButton onClick={closeDetail} aria-label='close'>
-      <CloseIcon />
-     </IconButton>
-    </Stack>
-    <Box sx={{ p: 2, overflow: "auto" }}>
-     {detailQ.isLoading && (
-      <Box display='flex' justifyContent='center' py={4}>
-       <CircularProgress />
-      </Box>
-     )}
-     {detailQ.isError && <Alert severity='error'>{detailQ.error instanceof Error ? detailQ.error.message : "Failed to load detail"}</Alert>}
-     {detailQ.isSuccess && detailQ.data && (
-      <Stack spacing={2}>
-       <Stack direction='row' spacing={1} flexWrap='wrap' useFlexGap>
-        <MethodChip method={detailQ.data.log.method} />
-        <StatusCodeChip code={detailQ.data.log.statusCode} />
-        <MsChip ms={detailQ.data.log.responseTimeMs} />
-       </Stack>
-       <Typography variant='body2' sx={{ fontFamily: "ui-monospace, monospace", wordBreak: "break-all" }}>
-        {detailQ.data.log.path}
-       </Typography>
-       <Typography variant='subtitle2' color='text.secondary'>
-        JSON
-       </Typography>
-       <Box
-        component='pre'
-        sx={{
-         m: 0,
-         p: 2,
-         borderRadius: 1,
-         bgcolor: alpha("#0f172a", 0.04),
-         fontSize: 12,
-         overflow: "auto",
-         maxHeight: "70vh",
-        }}
-       >
-        {JSON.stringify(detailQ.data, null, 2)}
-       </Box>
-      </Stack>
-     )}
-    </Box>
-   </Drawer>
+   <LogDetailDialog open={detailId != null} onClose={closeDetail} loading={detailQ.isLoading} error={detailErr} data={detailQ.data ?? null} onRetry={() => void detailQ.refetch()} />
   </Stack>
  );
 }

@@ -1,5 +1,5 @@
 import axios, { type AxiosError } from "axios";
-import type { ApiLog, Caller, Environment, LogsStats, Project } from "../types";
+import type { ApiLog, Caller, Environment, LogDetailData, LogsStats, Project } from "../types";
 
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_URL || "",
@@ -140,9 +140,9 @@ export async function fetchLogPaths(apiKey: string, environment: Environment): P
 export async function listLogs(
   apiKey: string,
   environment: Environment,
-  params: Record<string, string | undefined>,
-): Promise<{ data: ApiLog[]; nextCursor: string | null; total: number | null }> {
-  const query: Record<string, string> = {};
+  params: Record<string, string | number | undefined>,
+): Promise<{ data: ApiLog[]; total: number | null; limit: number; offset: number }> {
+  const query: Record<string, string | number> = {};
   for (const [k, v] of Object.entries(params)) {
     if (v !== undefined && v !== "") query[k] = v;
   }
@@ -157,10 +157,8 @@ export async function fetchLogDetail(
   apiKey: string,
   environment: Environment,
   id: string,
-): Promise<{ log: ApiLog; headers: unknown; body: unknown }> {
-  const { data } = await api.get<{
-    data: { log: ApiLog; headers: unknown; body: unknown };
-  }>(`/api/v1/logs/${id}/details`, {
+): Promise<LogDetailData> {
+  const { data } = await api.get<{ data: LogDetailData }>(`/api/v1/logs/${id}/details`, {
     headers: logHeaders(apiKey, environment),
   });
   return data.data;

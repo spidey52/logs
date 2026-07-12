@@ -1,15 +1,8 @@
-import dayjs from "dayjs";
-import customParseFormat from "dayjs/plugin/customParseFormat";
-import timezone from "dayjs/plugin/timezone";
-import utc from "dayjs/plugin/utc";
-
-dayjs.extend(utc);
-dayjs.extend(customParseFormat);
-dayjs.extend(timezone);
+import moment from "moment-timezone";
 
 /** Wall-clock instant for DB writes (UTC). */
 export function now(): Date {
-  return dayjs.utc().toDate();
+  return moment.utc().toDate();
 }
 
 /**
@@ -27,9 +20,4 @@ export function resolveRequestTimezone(header: string | undefined): string {
   }
 }
 
-/** Start of the current calendar day in `timeZone` (as absolute `Date`). */
-export function startOfLocalDay(timeZone: string): Date {
-  return dayjs().tz(timeZone).startOf("day").toDate();
-}
-
-export { dayjs };
+export { moment };

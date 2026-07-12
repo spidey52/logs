@@ -3,7 +3,6 @@ import TimelineIcon from "@mui/icons-material/Timeline";
 import RouteIcon from "@mui/icons-material/Route";
 import SettingsSuggestOutlinedIcon from "@mui/icons-material/SettingsSuggestOutlined";
 import {
-  Alert,
   Box,
   Card,
   CardContent,
@@ -19,9 +18,11 @@ import { alpha } from "@mui/material/styles";
 import { useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
 import { fetchLogPaths, fetchLogsStats } from "../api/client";
-import { useProjectWorkspace } from "../hooks/useProjectWorkspace";
-import { qk } from "../lib/queryKeys";
+import { PageHeader } from "../components/PageHeader";
 import { StatusCodeChip } from "../components/StatusCodeChip";
+import { useProjectWorkspace } from "../hooks/useProjectWorkspace";
+import { useToastOnChange } from "../hooks/useToastOnChange";
+import { qk } from "../lib/queryKeys";
 import type { LogsStats } from "../types";
 
 function StatCard({
@@ -118,24 +119,17 @@ export function DashboardPage() {
   const rows = useMemo(() => distributionRows(stats), [stats]);
   const maxCount = useMemo(() => Math.max(1, ...rows.map((r) => r.count)), [rows]);
 
-  if (projectsError) {
-    return <Alert severity="error">{projectsError}</Alert>;
-  }
+  useToastOnChange(projectsError, "error");
+  useToastOnChange(err, "warning");
 
   return (
     <Stack spacing={2}>
+      <PageHeader title="Overview" />
       {!projectsLoading && !selected && (
-        <Alert severity="info" sx={{ borderRadius: 1 }}>
-          Pick a project in the top bar, or create one under <strong>Projects</strong>.
-        </Alert>
+        <Typography variant="body2" color="text.secondary">
+          Pick a project in the top bar, or create one under Projects.
+        </Typography>
       )}
-
-      {err && (
-        <Alert severity="warning" sx={{ borderRadius: 1 }}>
-          {err}
-        </Alert>
-      )}
-
       {selected && loading && (
         <Box display="flex" justifyContent="center" py={6}>
           <CircularProgress />

@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
@@ -6,30 +6,28 @@ import { db } from "./db";
 import { apiLogBodies, apiLogHeaders, apiLogs, callers, projects } from "./db/schema";
 import { newApiKey } from "./lib/apiKey";
 import { decodeCursor } from "./lib/cursor";
-import { decodeLogsListCursor } from "./lib/logsCursor";
-import { resolveRequestTimezone } from "./lib/time";
 import { clientIp } from "./lib/http";
 import { newId } from "./lib/ids";
 import { partitionLogHeaders } from "./lib/logHeaders";
-import { now } from "./lib/time";
+import { now, resolveRequestTimezone } from "./lib/time";
 import { queryCallersPage } from "./services/callerQueries";
 import {
   averageResponseTime,
   countLogsSinceStartOfDay,
   distinctPaths,
-  statusCodeDistribution as fetchStatusCodeDistribution,
   queryLogsPage,
+  statusCodeDistribution as fetchStatusCodeDistribution,
   type LogFilter,
   type LogListSort,
 } from "./services/logQueries";
 import {
+  buildLogsListQuerySchema,
   callerCreateBody,
   callerListQuery,
   callerUpdateBody,
   environmentSchema,
   logBatchBodySchema,
   logIngestBodySchema,
-  buildLogsListQuerySchema,
   parseJson,
   parseQuery,
   projectCreateBody,
@@ -434,36 +432,18 @@ export function createApp() {
     const q = parseQuery(c, buildLogsListQuerySchema(tz));
     if (q instanceof Response) return q;
 
-    const { limit, withCount, cursor: rawCursor, sort, ...filterRest } = q;
-    let cursor = null;
-    if (rawCursor) {
-      cursor = decodeLogsListCursor(rawCursor, sort.field, sort.order);
-      if (!cursor) {
-        return c.json(
-          { error: "validation_error", issues: { formErrors: [], fieldErrors: { cursor: ["invalid"] } } },
-          400,
-        );
-      }
-    }
-
+    const { limit, offset, withCount, sort, date: _date, ...filterRest } = q;
     const filter: LogFilter = { projectId, ...filterRest };
     const sortOpts: LogListSort = sort;
 
-    const { rows, nextCursor, total } = await queryLogsPage(filter, {
+    const { rows, total } = await queryLogsPage(filter, {
       limit,
-      cursor,
+      offset,
       withCount,
       sort: sortOpts,
     });
 
-    const callerIds = [...new Set(rows.map((r) => r.callerId).filter(Boolean))] as string[];
-    let callerMap: Record<string, (typeof callers.$inferSelect)> = {};
-    if (callerIds.length) {
-      const cs = await db.select().from(callers).where(inArray(callers.id, callerIds));
-      callerMap = Object.fromEntries(cs.map((x) => [x.id, x]));
-    }
-    const data = rows.map((r) => (r.callerId && callerMap[r.callerId] ? { ...r, caller: callerMap[r.callerId] } : r));
-    return c.json({ data, nextCursor, total });
+    return c.json({ data: rows, total, limit, offset });
   });
 
   logs.get("/stats", async (c) => {
@@ -501,9 +481,22 @@ export function createApp() {
     const id = idParse.data;
     const [row] = await db.select().from(apiLogs).where(and(eq(apiLogs.id, id), eq(apiLogs.projectId, projectId))).limit(1);
     if (!row) return c.json({ error: "not_found" }, 404);
+
+    let caller = null;
+    if (row.callerId) {
+      const [cRow] = await db.select().from(callers).where(eq(callers.id, row.callerId)).limit(1);
+      caller = cRow ?? null;
+    }
+
     const [h] = await db.select().from(apiLogHeaders).where(eq(apiLogHeaders.logId, id)).limit(1);
     const [b] = await db.select().from(apiLogBodies).where(eq(apiLogBodies.logId, id)).limit(1);
-    return c.json({ data: { log: row, headers: h ?? null, body: b ?? null } });
+    return c.json({
+      data: {
+        log: caller ? { ...row, caller } : row,
+        headers: h ?? null,
+        body: b ?? null,
+      },
+    });
   });
 
   logs.get("/:id", async (c) => {

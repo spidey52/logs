@@ -6,7 +6,6 @@ import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import KeyIcon from "@mui/icons-material/Key";
 import RefreshIcon from "@mui/icons-material/Refresh";
 import {
-  Alert,
   Button,
   Chip,
   Dialog,
@@ -18,30 +17,27 @@ import {
   IconButton,
   InputLabel,
   MenuItem,
-  Paper,
   Select,
   Stack,
   Switch,
-  Table,
-  TableBody,
-  TableCell,
-  TableContainer,
-  TableHead,
-  TableRow,
   TextField,
   Tooltip,
   Typography,
 } from "@mui/material";
+import type { GridColDef } from "@mui/x-data-grid";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   createProject,
   deleteProject,
   regenerateProjectKey,
   updateProject,
 } from "../api/client";
+import { DataGridTable } from "../components/DataGridTable";
+import { PageHeader } from "../components/PageHeader";
 import { useProjectWorkspace } from "../hooks/useProjectWorkspace";
 import { qk } from "../lib/queryKeys";
+import { toast } from "../store/toastStore";
 import type { Environment, Project } from "../types";
 
 function EnvChip({ env }: { env: Environment }) {
@@ -65,11 +61,9 @@ export function ProjectsPage() {
   const [description, setDescription] = useState("");
   const [environment, setEnvironment] = useState<Environment>("dev");
   const [isActive, setIsActive] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Project | null>(null);
   const [copiedProjectId, setCopiedProjectId] = useState<string | null>(null);
   const [regenDoneProjectId, setRegenDoneProjectId] = useState<string | null>(null);
-  const [regenError, setRegenError] = useState<string | null>(null);
 
   const invalidateProjects = () => {
     void qc.invalidateQueries({ queryKey: qk.projects });
@@ -90,9 +84,9 @@ export function ProjectsPage() {
       void invalidateProjects();
       if (selected?.id === updated.id) setSelected(updated);
       setDialog(null);
-      setError(null);
+      toast.success(dialog?.mode === "create" ? "Project created" : "Project updated");
     },
-    onError: (e) => setError(e instanceof Error ? e.message : "Save failed"),
+    onError: (e) => toast.error(e instanceof Error ? e.message : "Save failed"),
   });
 
   const deleteMut = useMutation({
@@ -100,13 +94,14 @@ export function ProjectsPage() {
     onSuccess: () => {
       void invalidateProjects();
       setDeleteTarget(null);
+      toast.success("Project deleted");
     },
-    onError: (e) => setError(e instanceof Error ? e.message : "Delete failed"),
+    onError: (e) => toast.error(e instanceof Error ? e.message : "Delete failed"),
   });
 
   const regenMut = useMutation({
     mutationFn: (id: string) => regenerateProjectKey(id),
-    onError: (e) => setRegenError(e instanceof Error ? e.message : "Regenerate failed"),
+    onError: (e) => toast.error(e instanceof Error ? e.message : "Regenerate failed"),
   });
 
   const openCreate = () => {
@@ -114,7 +109,6 @@ export function ProjectsPage() {
     setDescription("");
     setEnvironment("dev");
     setIsActive(true);
-    setError(null);
     setDialog({ mode: "create" });
   };
 
@@ -123,19 +117,18 @@ export function ProjectsPage() {
     setDescription(p.description);
     setEnvironment(p.environment);
     setIsActive(p.isActive);
-    setError(null);
     setDialog({ mode: "edit", project: p });
   };
 
   const closeDialog = () => {
     setDialog(null);
-    setError(null);
     saveMut.reset();
   };
 
   const copyKey = async (p: Project) => {
     await navigator.clipboard.writeText(p.apiKey);
     setCopiedProjectId(p.id);
+    toast.success("API key copied");
     window.setTimeout(() => {
       setCopiedProjectId((cur) => (cur === p.id ? null : cur));
     }, 2000);
@@ -143,12 +136,12 @@ export function ProjectsPage() {
 
   const regen = (p: Project) => {
     if (!confirm(`Regenerate API key for "${p.name}"? The old key stops working immediately.`)) return;
-    setRegenError(null);
     regenMut.mutate(p.id, {
       onSuccess: async (key) => {
         await invalidateProjects();
         await navigator.clipboard.writeText(key);
         setRegenDoneProjectId(p.id);
+        toast.success("New API key generated and copied");
         window.setTimeout(() => {
           setRegenDoneProjectId((cur) => (cur === p.id ? null : cur));
         }, 2500);
@@ -156,9 +149,137 @@ export function ProjectsPage() {
     });
   };
 
+  const columns = useMemo<GridColDef<Project>[]>(
+    () => [
+      {
+        field: "name",
+        headerName: "Name",
+        flex: 1.2,
+        minWidth: 180,
+        renderCell: (params) => (
+          <Stack spacing={0.25} sx={{ py: 0.5, overflow: "hidden" }}>
+            <Typography fontWeight={700} variant="body2" noWrap>
+              {params.row.name}
+            </Typography>
+            {params.row.description ? (
+              <Typography variant="caption" color="text.secondary" noWrap>
+                {params.row.description}
+              </Typography>
+            ) : null}
+          </Stack>
+        ),
+      },
+      {
+        field: "environment",
+        headerName: "Environment",
+        width: 130,
+        renderCell: (params) => <EnvChip env={params.value} />,
+      },
+      {
+        field: "isActive",
+        headerName: "Active",
+        width: 100,
+        renderCell: (params) => (
+          <Chip
+            label={params.value ? "Yes" : "No"}
+            size="small"
+            color={params.value ? "success" : "default"}
+            variant={params.value ? "filled" : "outlined"}
+          />
+        ),
+      },
+      {
+        field: "apiKey",
+        headerName: "API key",
+        flex: 1,
+        minWidth: 200,
+        sortable: false,
+        renderCell: (params) => (
+          <Stack direction="row" alignItems="center" spacing={0.5} sx={{ overflow: "hidden" }}>
+            <Typography
+              variant="caption"
+              sx={{
+                fontFamily: "ui-monospace, monospace",
+                maxWidth: 200,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+              }}
+            >
+              {params.row.apiKey.slice(0, 14)}…
+            </Typography>
+            <Tooltip title={copiedProjectId === params.row.id ? "Copied" : "Copy key"}>
+              <IconButton
+                size="small"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void copyKey(params.row);
+                }}
+                color={copiedProjectId === params.row.id ? "success" : "default"}
+                aria-label={copiedProjectId === params.row.id ? "Copied" : "Copy API key"}
+              >
+                {copiedProjectId === params.row.id ? <CheckIcon fontSize="small" /> : <ContentCopyIcon fontSize="small" />}
+              </IconButton>
+            </Tooltip>
+          </Stack>
+        ),
+      },
+      {
+        field: "actions",
+        headerName: "Actions",
+        width: 140,
+        sortable: false,
+        filterable: false,
+        align: "right",
+        headerAlign: "right",
+        renderCell: (params) => (
+          <Stack direction="row" spacing={0.25} justifyContent="flex-end" sx={{ width: "100%" }}>
+            <Tooltip title={regenDoneProjectId === params.row.id ? "New key copied" : "Regenerate key"}>
+              <IconButton
+                size="small"
+                color={regenDoneProjectId === params.row.id ? "success" : "warning"}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  regen(params.row);
+                }}
+                disabled={regenMut.isPending}
+                aria-label="Regenerate API key"
+              >
+                {regenDoneProjectId === params.row.id ? <CheckIcon fontSize="small" /> : <KeyIcon fontSize="small" />}
+              </IconButton>
+            </Tooltip>
+            <Tooltip title="Edit">
+              <IconButton
+                size="small"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  openEdit(params.row);
+                }}
+              >
+                <EditOutlinedIcon fontSize="small" />
+              </IconButton>
+            </Tooltip>
+            <Tooltip title="Delete">
+              <IconButton
+                size="small"
+                color="error"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setDeleteTarget(params.row);
+                }}
+              >
+                <DeleteOutlineIcon fontSize="small" />
+              </IconButton>
+            </Tooltip>
+          </Stack>
+        ),
+      },
+    ],
+    [copiedProjectId, regenDoneProjectId, regenMut.isPending],
+  );
+
   return (
-    <Stack spacing={2}>
-      <Stack direction="row" spacing={1} alignItems="center" justifyContent="flex-end" flexWrap="wrap" useFlexGap>
+    <Stack spacing={2} sx={{ flex: 1, minHeight: 0, height: "100%" }}>
+      <PageHeader title="Projects">
         <Button
           variant="outlined"
           startIcon={<RefreshIcon />}
@@ -170,115 +291,20 @@ export function ProjectsPage() {
         <Button variant="contained" startIcon={<AddIcon />} onClick={openCreate} sx={{ borderRadius: 1 }}>
           New project
         </Button>
-      </Stack>
+      </PageHeader>
 
-      {regenError && (
-        <Alert severity="error" onClose={() => setRegenError(null)} sx={{ borderRadius: 1 }}>
-          {regenError}
-        </Alert>
-      )}
-
-      <TableContainer component={Paper} sx={{ borderRadius: 1 }}>
-        <Table size="small">
-          <TableHead>
-            <TableRow>
-              <TableCell>Name</TableCell>
-              <TableCell>Environment</TableCell>
-              <TableCell>Active</TableCell>
-              <TableCell>API key</TableCell>
-              <TableCell align="right">Actions</TableCell>
-            </TableRow>
-          </TableHead>
-          <TableBody>
-            {projects.map((p) => (
-              <TableRow key={p.id} hover sx={{ "&:last-child td": { border: 0 } }}>
-                <TableCell>
-                  <Typography fontWeight={700}>{p.name}</Typography>
-                  {p.description && (
-                    <Typography variant="caption" color="text.secondary" display="block">
-                      {p.description}
-                    </Typography>
-                  )}
-                </TableCell>
-                <TableCell>
-                  <EnvChip env={p.environment} />
-                </TableCell>
-                <TableCell>
-                  <Chip
-                    label={p.isActive ? "Yes" : "No"}
-                    size="small"
-                    color={p.isActive ? "success" : "default"}
-                    variant={p.isActive ? "filled" : "outlined"}
-                  />
-                </TableCell>
-                <TableCell>
-                  <Stack direction="row" alignItems="center" spacing={0.5}>
-                    <Typography
-                      variant="caption"
-                      sx={{
-                        fontFamily: "ui-monospace, monospace",
-                        maxWidth: 200,
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                      }}
-                    >
-                      {p.apiKey.slice(0, 14)}…
-                    </Typography>
-                    <Tooltip title={copiedProjectId === p.id ? "Copied" : "Copy key"}>
-                      <IconButton
-                        size="small"
-                        onClick={() => void copyKey(p)}
-                        color={copiedProjectId === p.id ? "success" : "default"}
-                        aria-label={copiedProjectId === p.id ? "Copied" : "Copy API key"}
-                      >
-                        {copiedProjectId === p.id ? <CheckIcon fontSize="small" /> : <ContentCopyIcon fontSize="small" />}
-                      </IconButton>
-                    </Tooltip>
-                  </Stack>
-                </TableCell>
-                <TableCell align="right">
-                  <Tooltip title={regenDoneProjectId === p.id ? "New key copied" : "Regenerate key"}>
-                    <IconButton
-                      size="small"
-                      color={regenDoneProjectId === p.id ? "success" : "warning"}
-                      onClick={() => regen(p)}
-                      disabled={regenMut.isPending}
-                      aria-label="Regenerate API key"
-                    >
-                      {regenDoneProjectId === p.id ? <CheckIcon fontSize="small" /> : <KeyIcon fontSize="small" />}
-                    </IconButton>
-                  </Tooltip>
-                  <Tooltip title="Edit">
-                    <IconButton size="small" onClick={() => openEdit(p)}>
-                      <EditOutlinedIcon fontSize="small" />
-                    </IconButton>
-                  </Tooltip>
-                  <Tooltip title="Delete">
-                    <IconButton size="small" color="error" onClick={() => setDeleteTarget(p)}>
-                      <DeleteOutlineIcon fontSize="small" />
-                    </IconButton>
-                  </Tooltip>
-                </TableCell>
-              </TableRow>
-            ))}
-            {projects.length === 0 && (
-              <TableRow>
-                <TableCell colSpan={5}>
-                  <Typography color="text.secondary" align="center" py={3}>
-                    No projects yet. Create one to obtain an API key.
-                  </Typography>
-                </TableCell>
-              </TableRow>
-            )}
-          </TableBody>
-        </Table>
-      </TableContainer>
+      <DataGridTable
+        rows={projects}
+        columns={columns}
+        emptyMessage="No projects yet. Create one to obtain an API key."
+        pageSizeOptions={[25, 50]}
+        hideFooter={projects.length === 0}
+      />
 
       <Dialog open={!!dialog} onClose={closeDialog} fullWidth maxWidth="sm" PaperProps={{ sx: { borderRadius: 1 } }}>
         <DialogTitle>{dialog?.mode === "create" ? "Create project" : "Edit project"}</DialogTitle>
         <DialogContent>
           <Stack spacing={2} sx={{ mt: 1 }}>
-            {error && <Alert severity="error">{error}</Alert>}
             <TextField label="Name" value={name} onChange={(e) => setName(e.target.value)} fullWidth required />
             <TextField
               label="Description"

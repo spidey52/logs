@@ -72,10 +72,5 @@ export const appTheme = createTheme({
         root: { fontWeight: 600, borderRadius: 4 },
       },
     },
-    MuiTableCell: {
-      styleOverrides: {
-        head: { fontWeight: 700, fontSize: "0.6875rem", textTransform: "uppercase", letterSpacing: "0.06em" },
-      },
-    },
   },
 });

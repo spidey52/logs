@@ -1,7 +1,7 @@
 import type { Context } from "hono";
 import { z } from "zod";
-import type { LogSortField } from "./lib/logsCursor";
-import { dayjs } from "./lib/time";
+import type { LogSortField } from "./services/logQueries";
+import { moment } from "./lib/time";
 
 export const environmentSchema = z.enum(["dev", "production"]);
 
@@ -168,17 +168,25 @@ const logSortFieldSchema = z.enum([
 
 const logSortOrderSchema = z.enum(["asc", "desc"]);
 
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+const SEARCH_FIELD_VALUES = ["path", "ip", "userAgent", "error", "host", "service", "requestId", "traceId"] as const;
+type SearchField = (typeof SEARCH_FIELD_VALUES)[number];
+
 const logsListQueryRaw = z
   .object({
     environment: z.string().optional(),
-    limit: z.coerce.number().int().min(1).max(1000).default(100),
-    cursor: z.string().optional(),
+    limit: z.coerce.number().int().min(1).max(1000).default(50),
+    offset: z.coerce.number().int().min(0).default(0),
     withCount: withCountQuery,
     sort: logSortFieldSchema.optional(),
     order: logSortOrderSchema.optional(),
     method: z.string().optional(),
+    methods: z.string().optional(),
     path: z.string().optional(),
     search: z.string().optional(),
+    searchFields: z.string().optional(),
+    search_fields: z.string().optional(),
     traceId: z.string().optional(),
     trace_id: z.string().optional(),
     service: z.string().optional(),
@@ -192,9 +200,18 @@ const logsListQueryRaw = z
     statusCodes: z.string().optional(),
     status_codes: z.string().optional(),
     date: z.string().optional(),
-    dateRange: z.string().optional(),
+    dateFrom: z.string().optional(),
+    dateTo: z.string().optional(),
+    from: z.string().optional(),
+    to: z.string().optional(),
   })
   .superRefine((data, ctx) => {
+    for (const key of ["date", "dateFrom", "dateTo", "from", "to"] as const) {
+      const v = data[key];
+      if (v && !DATE_RE.test(v)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: `${key} must be YYYY-MM-DD`, path: [key] });
+      }
+    }
     const cis = data.callerIds ?? data.caller_ids;
     if (cis?.trim()) {
       for (const p of cis.split(",").map((x) => x.trim()).filter(Boolean)) {
@@ -212,6 +229,14 @@ const logsListQueryRaw = z
         }
       }
     }
+    const sfs = data.searchFields ?? data.search_fields;
+    if (sfs?.trim()) {
+      for (const p of sfs.split(",").map((x) => x.trim()).filter(Boolean)) {
+        if (!(SEARCH_FIELD_VALUES as readonly string[]).includes(p)) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, message: `invalid searchFields: ${p}`, path: ["searchFields"] });
+        }
+      }
+    }
   });
 
 /** `timeZone` = IANA name from `X-Timezone` (see {@link resolveRequestTimezone}). */
@@ -222,16 +247,30 @@ export function buildLogsListQuerySchema(timeZone: string) {
     const callerIdsStr = q.callerIds ?? q.caller_ids;
     const callerSearchRaw = q.callerSearch ?? q.caller_search;
     const statusCodesStr = q.statusCodes ?? q.status_codes;
+    const methodsStr = q.methods ?? q.method;
+    const searchFieldsStr = q.searchFields ?? q.search_fields;
+
+    const today = moment().tz(timeZone).format("YYYY-MM-DD");
+    const fromRaw = q.dateFrom ?? q.from ?? q.date;
+    const toRaw = q.dateTo ?? q.to ?? q.dateFrom ?? q.from ?? q.date;
+    const fromStr = fromRaw && DATE_RE.test(fromRaw) ? fromRaw : today;
+    const toStr = toRaw && DATE_RE.test(toRaw) ? toRaw : fromStr;
+    const fromDay = moment.tz(fromStr, "YYYY-MM-DD", timeZone);
+    const toDay = moment.tz(toStr, "YYYY-MM-DD", timeZone);
+    const rangeStart = fromDay.isSameOrBefore(toDay, "day") ? fromDay : toDay;
+    const rangeEnd = fromDay.isSameOrBefore(toDay, "day") ? toDay : fromDay;
 
     const filter: {
       environment?: string;
       limit: number;
-      cursor?: string;
+      offset: number;
       withCount: boolean;
       sort: { field: LogSortField; order: "asc" | "desc" };
       method?: string;
+      methods?: string[];
       path?: string;
       search?: string;
+      searchFields?: SearchField[];
       traceId?: string;
       service?: string;
       callerId?: string;
@@ -241,19 +280,41 @@ export function buildLogsListQuerySchema(timeZone: string) {
       statusCodeMin?: number;
       statusCodeMax?: number;
       statusCodes?: number[];
-      fromDate?: Date;
-      toDate?: Date;
+      fromDate: Date;
+      toDate: Date;
+      date: string;
+      dateFrom: string;
+      dateTo: string;
     } = {
       limit: q.limit,
+      offset: q.offset,
       withCount: q.withCount,
       sort: { field: q.sort ?? "timestamp", order: q.order ?? "desc" },
+      fromDate: rangeStart.clone().startOf("day").toDate(),
+      toDate: rangeEnd.clone().endOf("day").toDate(),
+      date: rangeStart.format("YYYY-MM-DD"),
+      dateFrom: rangeStart.format("YYYY-MM-DD"),
+      dateTo: rangeEnd.format("YYYY-MM-DD"),
     };
 
-    if (q.cursor) filter.cursor = q.cursor;
     if (q.environment) filter.environment = q.environment;
-    if (q.method) filter.method = q.method;
+    if (methodsStr?.trim()) {
+      const methods = [...new Set(methodsStr.split(",").map((x) => x.trim().toUpperCase()).filter(Boolean))];
+      if (methods.length === 1) filter.method = methods[0];
+      else if (methods.length > 1) filter.methods = methods;
+    }
     if (q.path) filter.path = q.path;
-    if (q.search) filter.search = q.search;
+    if (q.search?.trim()) filter.search = q.search.trim();
+    if (searchFieldsStr?.trim()) {
+      filter.searchFields = [
+        ...new Set(
+          searchFieldsStr
+            .split(",")
+            .map((x) => x.trim())
+            .filter((x): x is SearchField => (SEARCH_FIELD_VALUES as readonly string[]).includes(x)),
+        ),
+      ];
+    }
     if (traceId) filter.traceId = traceId;
     if (q.service) filter.service = q.service;
     if (callerIdsStr?.trim()) {
@@ -277,35 +338,6 @@ export function buildLogsListQuerySchema(timeZone: string) {
       } else {
         const n = parseInt(q.statusCode, 10);
         if (!Number.isNaN(n)) filter.statusCode = n;
-      }
-    }
-
-    if (q.date && /^\d{4}-\d{2}-\d{2}$/.test(q.date)) {
-      const from = dayjs.tz(q.date, "YYYY-MM-DD", timeZone);
-      if (from.isValid()) {
-        filter.fromDate = from.startOf("day").toDate();
-        filter.toDate = from.endOf("day").toDate();
-      }
-    }
-
-    if (q.dateRange) {
-      const parts = q.dateRange.split("|");
-      if (parts.length === 2) {
-        const a = parts[0]!.trim();
-        const b = parts[1]!.trim();
-        if (/^\d{4}-\d{2}-\d{2}$/.test(a) && /^\d{4}-\d{2}-\d{2}$/.test(b)) {
-          let from = dayjs.tz(a, "YYYY-MM-DD", timeZone);
-          let to = dayjs.tz(b, "YYYY-MM-DD", timeZone);
-          if (from.isValid() && to.isValid()) {
-            if (from.isAfter(to)) {
-              const tmp = from;
-              from = to;
-              to = tmp;
-            }
-            filter.fromDate = from.startOf("day").toDate();
-            filter.toDate = to.endOf("day").toDate();
-          }
-        }
       }
     }
 

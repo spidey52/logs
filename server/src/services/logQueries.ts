@@ -1,11 +1,10 @@
 import { and, asc, avg, count, desc, eq, getTableColumns, gte, inArray, lte, or, sql, type SQL } from "drizzle-orm";
 import type { AnyPgColumn } from "drizzle-orm/pg-core";
-import { encodeLogsListCursor, type DecodedLogsCursor, type LogSortField } from "../lib/logsCursor";
-import { startOfLocalDay } from "../lib/time";
+import { moment } from "../lib/time";
 import { db } from "../db";
 import { apiLogs, callers } from "../db/schema";
 
-export type { LogSortField };
+export type LogSortField = "timestamp" | "method" | "status_code" | "response_time_ms" | "path" | "caller";
 
 export type LogListSort = {
   field: LogSortField;
@@ -25,26 +24,35 @@ export type LogFilter = {
   projectId: string;
   environment?: string;
   method?: string;
+  methods?: string[];
   statusCode?: number;
   statusCodeMin?: number;
   statusCodeMax?: number;
   statusCodes?: number[];
   path?: string;
   search?: string;
+  searchFields?: Array<"path" | "ip" | "userAgent" | "error" | "host" | "service" | "requestId" | "traceId">;
   traceId?: string;
   service?: string;
   callerId?: string;
   callerIds?: string[];
-  /** Substring match on linked caller name or identifier (requires callers join). */
   callerSearch?: string;
   fromDate?: Date;
   toDate?: Date;
 };
 
+export type LogListRow = typeof apiLogs.$inferSelect & {
+  caller: { id: string; name: string; identifier: string } | null;
+};
+
 function logWhereParts(filter: LogFilter) {
   const parts = [eq(apiLogs.projectId, filter.projectId)];
   if (filter.environment) parts.push(eq(apiLogs.environment, filter.environment));
-  if (filter.method) parts.push(eq(apiLogs.method, filter.method));
+  if (filter.methods?.length) {
+    parts.push(inArray(apiLogs.method, filter.methods));
+  } else if (filter.method) {
+    parts.push(eq(apiLogs.method, filter.method));
+  }
   if (filter.statusCodes?.length) {
     parts.push(inArray(apiLogs.statusCode, filter.statusCodes));
   } else if (filter.statusCode != null) {
@@ -55,13 +63,40 @@ function logWhereParts(filter: LogFilter) {
   }
   if (filter.path) parts.push(ilikeContains(apiLogs.path, filter.path));
   if (filter.search) {
-    parts.push(
-      or(
-        ilikeContains(apiLogs.path, filter.search),
-        ilikeContains(apiLogs.userAgent, filter.search),
-        ilikeContains(apiLogs.ipAddress, filter.search),
-      )!,
-    );
+    const fields = filter.searchFields?.length
+      ? filter.searchFields
+      : (["path", "ip", "userAgent"] as const);
+    const searchParts: SQL[] = [];
+    for (const f of fields) {
+      switch (f) {
+        case "path":
+          searchParts.push(ilikeContains(apiLogs.path, filter.search));
+          break;
+        case "ip":
+          searchParts.push(ilikeContains(apiLogs.ipAddress, filter.search));
+          break;
+        case "userAgent":
+          searchParts.push(ilikeContains(apiLogs.userAgent, filter.search));
+          break;
+        case "error":
+          searchParts.push(ilikeContains(apiLogs.errorMessage, filter.search));
+          break;
+        case "host":
+          searchParts.push(ilikeContains(apiLogs.host, filter.search));
+          break;
+        case "service":
+          searchParts.push(ilikeContains(apiLogs.service, filter.search));
+          break;
+        case "requestId":
+          searchParts.push(ilikeContains(apiLogs.requestId, filter.search));
+          break;
+        case "traceId":
+          searchParts.push(ilikeContains(apiLogs.traceId, filter.search));
+          break;
+      }
+    }
+    if (searchParts.length === 1) parts.push(searchParts[0]!);
+    else if (searchParts.length > 1) parts.push(or(...searchParts)!);
   }
   if (filter.traceId) parts.push(eq(apiLogs.traceId, filter.traceId));
   if (filter.service) parts.push(eq(apiLogs.service, filter.service));
@@ -81,29 +116,6 @@ function logWhereParts(filter: LogFilter) {
   if (filter.fromDate) parts.push(gte(apiLogs.timestamp, filter.fromDate));
   if (filter.toDate) parts.push(lte(apiLogs.timestamp, filter.toDate));
   return and(...parts);
-}
-
-function keysetWhere(cursor: DecodedLogsCursor, sort: LogSortField): SQL {
-  const op = cursor.order === "desc" ? sql` < ` : sql` > `;
-  const cid = cursor.id;
-  switch (sort) {
-    case "timestamp":
-      return sql`ROW(${apiLogs.timestamp}, ${apiLogs.id})${op}ROW(${cursor.timestampIso}::timestamptz, ${cid}::uuid)`;
-    case "method":
-      return sql`ROW(${apiLogs.method}, ${apiLogs.id})${op}ROW(${cursor.method}, ${cid}::uuid)`;
-    case "status_code":
-      return sql`ROW(${apiLogs.statusCode}, ${apiLogs.id})${op}ROW(${cursor.statusCode}, ${cid}::uuid)`;
-    case "response_time_ms":
-      return sql`ROW(${apiLogs.responseTimeMs}, ${apiLogs.id})${op}ROW(${cursor.responseTimeMs}, ${cid}::uuid)`;
-    case "path":
-      return sql`ROW(${apiLogs.path}, ${apiLogs.id})${op}ROW(${cursor.path}, ${cid}::uuid)`;
-    case "caller": {
-      const ck = cursor.callerKey;
-      return sql`ROW(COALESCE(${callers.name}, ''), ${apiLogs.id})${op}ROW(${ck}, ${cid}::uuid)`;
-    }
-    default:
-      return sql`ROW(${apiLogs.timestamp}, ${apiLogs.id})${op}ROW(${cursor.timestampIso}::timestamptz, ${cid}::uuid)`;
-  }
 }
 
 function orderByClause(sort: LogSortField, order: "asc" | "desc") {
@@ -128,118 +140,69 @@ function orderByClause(sort: LogSortField, order: "asc" | "desc") {
   }
 }
 
-type RowWithMeta = typeof apiLogs.$inferSelect & { _cn?: string | null; _total?: string };
-
-function stripRow(r: RowWithMeta): typeof apiLogs.$inferSelect {
-  const { _cn: _c, _total: _t, ...rest } = r;
-  return rest;
-}
-
-function encodeRowCursor(row: typeof apiLogs.$inferSelect, sort: LogListSort, callerName: string | null | undefined): string {
-  return encodeLogsListCursor({
-    sort: sort.field,
-    order: sort.order,
-    id: row.id,
-    timestampIso: row.timestamp.toISOString(),
-    method: row.method,
-    statusCode: row.statusCode,
-    responseTimeMs: row.responseTimeMs,
-    path: row.path,
-    callerKey: sort.field === "caller" ? (callerName ?? "") : "",
-  });
-}
-
 export async function queryLogsPage(
   filter: LogFilter,
-  opts: { limit: number; cursor: DecodedLogsCursor | null; withCount: boolean; sort: LogListSort },
-): Promise<{
-  rows: (typeof apiLogs.$inferSelect)[];
-  nextCursor: string | null;
-  total: number | null;
-}> {
-  const base = logWhereParts(filter);
-  const { sort } = opts;
-  const useCallerJoin = sort.field === "caller" || Boolean(filter.callerSearch?.trim());
-  const keyset = opts.cursor ? keysetWhere(opts.cursor, sort.field) : undefined;
-  const where = keyset ? and(base, keyset) : base;
-  const ob = orderByClause(sort.field, sort.order);
+  opts: { limit: number; offset: number; withCount: boolean; sort: LogListSort },
+): Promise<{ rows: LogListRow[]; total: number | null; limit: number; offset: number }> {
+  const where = logWhereParts(filter);
+  const ob = orderByClause(opts.sort.field, opts.sort.order);
+
+  const selectShape = {
+    ...getTableColumns(apiLogs),
+    caller: {
+      id: callers.id,
+      name: callers.name,
+      identifier: callers.identifier,
+    },
+  };
 
   if (opts.withCount) {
-    if (useCallerJoin) {
-      const rows = await db
-        .select({
-          ...getTableColumns(apiLogs),
-          _cn: callers.name,
-          _total: sql<string>`(count(*) over ())::text`,
-        })
-        .from(apiLogs)
-        .leftJoin(callers, eq(apiLogs.callerId, callers.id))
-        .where(where)
-        .orderBy(...ob)
-        .limit(opts.limit);
-
-      if (!rows.length) {
-        return { rows: [], nextCursor: null, total: 0 };
-      }
-      const total = Number(rows[0]!._total);
-      const clean = rows.map((r) => stripRow(r));
-      const lastFull = rows[rows.length - 1]!;
-      const last = clean[clean.length - 1]!;
-      const nextCursor =
-        clean.length === opts.limit ? encodeRowCursor(last, sort, lastFull._cn ?? null) : null;
-      return { rows: clean, nextCursor, total };
-    }
-
     const rows = await db
       .select({
-        ...getTableColumns(apiLogs),
+        ...selectShape,
         _total: sql<string>`(count(*) over ())::text`,
-      })
-      .from(apiLogs)
-      .where(where)
-      .orderBy(...ob)
-      .limit(opts.limit);
-
-    if (!rows.length) {
-      return { rows: [], nextCursor: null, total: 0 };
-    }
-    const total = Number(rows[0]!._total);
-    const clean = rows.map((r) => stripRow(r));
-    const last = clean[clean.length - 1]!;
-    const nextCursor = clean.length === opts.limit ? encodeRowCursor(last, sort, null) : null;
-    return { rows: clean, nextCursor, total };
-  }
-
-  if (useCallerJoin) {
-    const rows = await db
-      .select({
-        ...getTableColumns(apiLogs),
-        _cn: callers.name,
       })
       .from(apiLogs)
       .leftJoin(callers, eq(apiLogs.callerId, callers.id))
       .where(where)
       .orderBy(...ob)
-      .limit(opts.limit);
+      .limit(opts.limit)
+      .offset(opts.offset);
 
-    const clean = rows.map((r) => stripRow(r));
-    const lastFull = rows[rows.length - 1];
-    const last = clean[clean.length - 1];
-    const nextCursor =
-      last && clean.length === opts.limit ? encodeRowCursor(last, sort, lastFull?._cn ?? null) : null;
-    return { rows: clean, nextCursor, total: null };
+    if (!rows.length) {
+      return { rows: [], total: 0, limit: opts.limit, offset: opts.offset };
+    }
+
+    const total = Number(rows[0]!._total);
+    const clean: LogListRow[] = rows.map(({ _total: _, ...r }) => ({
+      ...r,
+      caller: r.caller?.id ? r.caller : null,
+    }));
+    return { rows: clean, total, limit: opts.limit, offset: opts.offset };
   }
 
-  const clean = await db.select().from(apiLogs).where(where).orderBy(...ob).limit(opts.limit);
+  const rows = await db
+    .select(selectShape)
+    .from(apiLogs)
+    .leftJoin(callers, eq(apiLogs.callerId, callers.id))
+    .where(where)
+    .orderBy(...ob)
+    .limit(opts.limit)
+    .offset(opts.offset);
 
-  const last = clean[clean.length - 1];
-  const nextCursor =
-    last && clean.length === opts.limit ? encodeRowCursor(last, sort, null) : null;
-  return { rows: clean, nextCursor, total: null };
+  const clean: LogListRow[] = rows.map((r) => ({
+    ...r,
+    caller: r.caller?.id ? r.caller : null,
+  }));
+  return { rows: clean, total: null, limit: opts.limit, offset: opts.offset };
+}
+
+function startOfToday(timeZone: string): Date {
+  return moment().tz(timeZone).startOf("day").toDate();
 }
 
 export async function countLogsSinceStartOfDay(projectId: string, environment: string, timeZone: string) {
-  const start = startOfLocalDay(timeZone);
+  const start = startOfToday(timeZone);
   const [row] = await db
     .select({ n: count() })
     .from(apiLogs)
@@ -248,7 +211,7 @@ export async function countLogsSinceStartOfDay(projectId: string, environment: s
 }
 
 export async function statusCodeDistribution(projectId: string, environment: string, timeZone: string) {
-  const start = startOfLocalDay(timeZone);
+  const start = startOfToday(timeZone);
   const rows = await db
     .select({
       code: apiLogs.statusCode,
@@ -266,7 +229,7 @@ export async function statusCodeDistribution(projectId: string, environment: str
 }
 
 export async function averageResponseTime(projectId: string, environment: string, timeZone: string) {
-  const start = startOfLocalDay(timeZone);
+  const start = startOfToday(timeZone);
   const [row] = await db
     .select({ avgMs: avg(apiLogs.responseTimeMs) })
     .from(apiLogs)
@@ -277,7 +240,7 @@ export async function averageResponseTime(projectId: string, environment: string
 }
 
 export async function distinctPaths(projectId: string, environment: string, timeZone: string) {
-  const start = startOfLocalDay(timeZone);
+  const start = startOfToday(timeZone);
   const rows = await db
     .selectDistinct({ path: apiLogs.path })
     .from(apiLogs)
