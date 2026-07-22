@@ -282,21 +282,28 @@ function CalendarFooter({
       disabled: !dayAllowed(yesterday.toDate(), minDate, maxDate),
       onClick: () => onDayShortcut(yesterday.toDate()),
     },
-    {
-      key: "thisMonth",
-      label: "Mon",
-      title: "This month",
-      disabled: !thisMonth,
-      onClick: () => thisMonth && onRangeShortcut(thisMonth.start, thisMonth.end),
-    },
-    {
-      key: "thisYear",
-      label: "Year",
-      title: `Financial year ${fy.start.format("D MMM YYYY")} – ${fy.end.format("D MMM YYYY")}`,
-      disabled: !thisYear,
-      onClick: () => thisYear && onRangeShortcut(thisYear.start, thisYear.end),
-    },
   ];
+
+  // Month / year only in range mode — in single mode they silently expanded the
+  // query to a full month and looked like a “one date” selection bug.
+  if (mode === "range") {
+    shortcuts.push(
+      {
+        key: "thisMonth",
+        label: "Mon",
+        title: "This month",
+        disabled: !thisMonth,
+        onClick: () => thisMonth && onRangeShortcut(thisMonth.start, thisMonth.end),
+      },
+      {
+        key: "thisYear",
+        label: "Year",
+        title: `Financial year ${fy.start.format("D MMM YYYY")} – ${fy.end.format("D MMM YYYY")}`,
+        disabled: !thisYear,
+        onClick: () => thisYear && onRangeShortcut(thisYear.start, thisYear.end),
+      },
+    );
+  }
 
   return (
     <Box

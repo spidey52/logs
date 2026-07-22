@@ -13,6 +13,7 @@ import { now, resolveRequestTimezone } from "./lib/time";
 import { queryCallersPage } from "./services/callerQueries";
 import {
   averageResponseTime,
+  countLogs,
   countLogsSinceStartOfDay,
   distinctPaths,
   queryLogsPage,
@@ -461,6 +462,30 @@ export function createApp() {
     return c.json({ data: rows, total, limit, offset });
   });
 
+  /** Lightweight total for the same filters as GET / — used by the UI in parallel with the page. */
+  logs.get("/count", async (c) => {
+    const projectId = c.get("projectId");
+    const environment = c.get("environment");
+    const tz = resolveRequestTimezone(c.req.header("X-Timezone"));
+    const q = parseQuery(c, buildLogsListQuerySchema(tz));
+    if (q instanceof Response) return q;
+
+    const {
+      limit: _limit,
+      offset: _offset,
+      withCount: _withCount,
+      sort: _sort,
+      date: _date,
+      dateFrom: _dateFrom,
+      dateTo: _dateTo,
+      environment: _environment,
+      ...filterRest
+    } = q;
+    const filter: LogFilter = { projectId, environment, ...filterRest };
+    const total = await countLogs(filter);
+    return c.json({ data: { total } });
+  });
+
   logs.get("/stats", async (c) => {
     const projectId = c.get("projectId");
     const environment = c.get("environment");
@@ -526,14 +551,22 @@ export function createApp() {
     const q = parseQuery(c, analyticsQuery);
     if (q instanceof Response) return q;
 
-    const data = await queryAnalyticsRange({
-      projectId,
-      environment,
-      dateFrom: q.dateFrom,
-      dateTo: q.dateTo,
-      timeZone: tz,
-    });
-    return c.json({ data });
+    try {
+      const data = await queryAnalyticsRange({
+        projectId,
+        environment,
+        dateFrom: q.dateFrom,
+        dateTo: q.dateTo,
+        timeZone: tz,
+      });
+      return c.json({ data });
+    } catch (e) {
+      console.error("[analytics]", e);
+      return c.json(
+        { error: "analytics_failed", message: e instanceof Error ? e.message : String(e) },
+        500,
+      );
+    }
   });
 
   logs.get("/:id/details", async (c) => {
@@ -570,7 +603,7 @@ export function createApp() {
     const projectId = c.get("projectId");
     const environment = c.get("environment");
     const id = c.req.param("id");
-    if (["batch", "stats", "paths", "analytics"].includes(id)) return c.notFound();
+    if (["batch", "stats", "paths", "analytics", "count"].includes(id)) return c.notFound();
     const idParse = uuidParam.safeParse(id);
     if (!idParse.success) return c.json({ error: "validation_error", issues: idParse.error.flatten() }, 400);
     const [row] = await db

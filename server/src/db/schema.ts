@@ -79,6 +79,8 @@ export const apiLogs = pgTable(
   (t) => [
     index("api_logs_project_ts_idx").on(t.projectId, t.timestamp),
     index("api_logs_project_env_ts_idx").on(t.projectId, t.environment, t.timestamp),
+    // Matches default list sort: env-scoped, newest first (avoids incremental sort).
+    index("api_logs_project_env_ts_id_desc_idx").on(t.projectId, t.environment, t.timestamp.desc(), t.id.desc()),
     index("api_logs_trace_id_idx").on(t.projectId, t.traceId),
     index("api_logs_service_ts_idx").on(t.projectId, t.service, t.timestamp),
     index("api_logs_status_code_idx").on(t.statusCode),

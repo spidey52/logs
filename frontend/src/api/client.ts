@@ -169,6 +169,22 @@ export async function listLogs(
   return data;
 }
 
+export async function countLogs(
+  apiKey: string,
+  environment: Environment,
+  params: Record<string, string | number | undefined>,
+): Promise<number> {
+  const query: Record<string, string | number> = {};
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== "") query[k] = v;
+  }
+  const { data } = await api.get<{ data: { total: number } }>("/api/v1/logs/count", {
+    headers: logHeaders(apiKey, environment),
+    params: query,
+  });
+  return data.data.total;
+}
+
 export async function fetchLogDetail(
   apiKey: string,
   environment: Environment,

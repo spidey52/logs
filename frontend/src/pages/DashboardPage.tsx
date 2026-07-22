@@ -219,15 +219,15 @@ export function DashboardPage() {
   const stats = statsQ.data;
   const paths = pathsQ.data ?? [];
   const analytics = analyticsQ.data;
-  const loading = !!selected && (statsQ.isLoading || pathsQ.isLoading || analyticsQ.isLoading);
+  const loading = !!selected && (statsQ.isLoading || pathsQ.isLoading);
+  const analyticsLoading = !!selected && analyticsQ.isLoading;
   const err =
     statsQ.error instanceof Error
       ? statsQ.error.message
       : pathsQ.error instanceof Error
         ? pathsQ.error.message
-        : analyticsQ.error instanceof Error
-          ? analyticsQ.error.message
-          : null;
+        : null;
+  const analyticsErr = analyticsQ.error instanceof Error ? analyticsQ.error.message : null;
 
   const rows = useMemo(() => distributionRows(stats), [stats]);
   const maxCount = useMemo(() => Math.max(1, ...rows.map((r) => r.count)), [rows]);
@@ -244,6 +244,7 @@ export function DashboardPage() {
 
   useToastOnChange(projectsError, "error");
   useToastOnChange(err, "warning");
+  useToastOnChange(analyticsErr, "warning");
 
   return (
     <Stack spacing={2}>
@@ -320,6 +321,18 @@ export function DashboardPage() {
               accent="#d97706"
             />
           </Box>
+
+          {analyticsLoading && !analytics ? (
+            <Box display="flex" justifyContent="center" py={4}>
+              <CircularProgress size={28} />
+            </Box>
+          ) : null}
+
+          {analyticsErr && !analytics ? (
+            <Typography variant="body2" color="warning.main">
+              Analytics unavailable: {analyticsErr}
+            </Typography>
+          ) : null}
 
           {analytics ? (
             <Box

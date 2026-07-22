@@ -5,7 +5,7 @@ import { useQuery } from "@tanstack/react-query";
 import { shallow, useStore } from "@tanstack/react-store";
 import moment from "moment";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { fetchLogDetail, listCallers, listLogs } from "../api/client";
+import { fetchLogDetail, listCallers, listLogs, countLogs } from "../api/client";
 import { DataGridTable } from "../components/DataGridTable";
 import { FlexibleDatePicker, type DateRangeValue } from "../components/FlexibleDatePicker";
 import { LogDetailDialog } from "../components/LogDetailDialog";
@@ -190,37 +190,43 @@ export function LogsPage() {
   [selected],
  );
 
- /** Avoid COUNT(*) OVER() on every page flip — only count when filters/sort change. */
+ /** Avoid COUNT on every page flip — only recount when filters/sort change. */
  const totalsCache = useRef(new Map<string, number>());
  const totalKey = `${selected?.id ?? ""}|${filtersKey}|${sortKey}`;
 
+ const filterParams = useMemo(() => {
+  const dateFrom = filters.dateFrom;
+  const dateTo = filters.dateMode === "single" ? filters.dateFrom : filters.dateTo;
+  return {
+   dateFrom,
+   dateTo,
+   methods: filters.methods.length ? filters.methods.join(",") : undefined,
+   search: filters.search.trim() || undefined,
+   searchFields: filters.search.trim() && filters.searchFields.length ? filters.searchFields.join(",") : undefined,
+   statusCodes: filters.statusCodes.length ? [...filters.statusCodes].sort((a, b) => a - b).join(",") : undefined,
+   callerIds: filters.callerPicks.length ? filters.callerPicks.map((c) => c.id).join(",") : undefined,
+  };
+ }, [filters]);
+
+ // Heal inconsistent state: single mode must never keep a multi-day range.
+ useEffect(() => {
+  if (filters.dateMode === "single" && filters.dateFrom !== filters.dateTo) {
+   patchLogsFilters({ dateTo: filters.dateFrom });
+  }
+ }, [filters.dateMode, filters.dateFrom, filters.dateTo]);
+
+ // Page rows first (no COUNT) so the grid paints quickly on remote DBs.
  const logsQ = useQuery({
   queryKey: selected ? qk.logsPage(selected.id, filtersKey, sortKey, offset) : ["logs", "page", "__none"],
-  queryFn: async () => {
-   const needCount = !totalsCache.current.has(totalKey);
-   const res = await listLogs(selected!.apiKey, selected!.environment, {
+  queryFn: async () =>
+   listLogs(selected!.apiKey, selected!.environment, {
     limit: PAGE_SIZE,
     offset,
-    withCount: needCount ? 1 : undefined,
-    dateFrom: filters.dateFrom,
-    dateTo: filters.dateTo,
-    methods: filters.methods.length ? filters.methods.join(",") : undefined,
-    search: filters.search.trim() || undefined,
-    searchFields: filters.search.trim() && filters.searchFields.length ? filters.searchFields.join(",") : undefined,
-    statusCodes: filters.statusCodes.length ? [...filters.statusCodes].sort((a, b) => a - b).join(",") : undefined,
-    callerIds: filters.callerPicks.length ? filters.callerPicks.map((c) => c.id).join(",") : undefined,
+    ...filterParams,
     sort: logsSort.field,
     order: logsSort.order,
-   });
-   if (typeof res.total === "number") totalsCache.current.set(totalKey, res.total);
-   return {
-    ...res,
-    total: res.total ?? totalsCache.current.get(totalKey) ?? 0,
-   };
-  },
+   }),
   enabled: !!selected,
-  // Only keep previous page while flipping pages — never across filter/sort changes
-  // (otherwise old rows linger with no spinner and filters look broken).
   placeholderData: (previousData, previousQuery) => {
    const prevKey = previousQuery?.queryKey;
    if (!prevKey || !selected) return undefined;
@@ -231,8 +237,19 @@ export function LogsPage() {
   },
  });
 
+ const countQ = useQuery({
+  queryKey: selected ? ["logs", "count", selected.id, filtersKey] : ["logs", "count", "__none"],
+  queryFn: async () => {
+   const total = await countLogs(selected!.apiKey, selected!.environment, filterParams);
+   totalsCache.current.set(totalKey, total);
+   return total;
+  },
+  enabled: !!selected,
+  staleTime: 30_000,
+ });
+
  const rows = logsQ.data?.data ?? [];
- const total = logsQ.data?.total ?? totalsCache.current.get(totalKey) ?? 0;
+ const total = countQ.data ?? totalsCache.current.get(totalKey) ?? (rows.length > 0 ? offset + rows.length + (rows.length === PAGE_SIZE ? 1 : 0) : 0);
  const gridLoading = logsQ.isPending || logsQ.isFetching;
 
  useEffect(() => {
@@ -354,13 +371,17 @@ export function LogsPage() {
  }, [filters.dateFrom, filters.dateTo]);
 
  const onDateChange = useCallback((next: DateRangeValue) => {
-  patchLogsFilters({
-   dateFrom: moment(next.start).format("YYYY-MM-DD"),
-   dateTo: moment(next.end).format("YYYY-MM-DD"),
-  });
+  const dateFrom = moment(next.start).format("YYYY-MM-DD");
+  const dateTo = moment(next.end).format("YYYY-MM-DD");
+  patchLogsFilters({ dateFrom, dateTo });
  }, []);
 
  const onDateModeChange = useCallback((dateMode: "single" | "range") => {
+  if (dateMode === "single") {
+   const day = uiStore.state.logsFilters.dateFrom;
+   patchLogsFilters({ dateMode, dateFrom: day, dateTo: day });
+   return;
+  }
   patchLogsFilters({ dateMode });
  }, []);
 
@@ -394,8 +415,8 @@ export function LogsPage() {
 
  const refreshLogs = useCallback(() => {
   totalsCache.current.delete(totalKey);
-  void logsQ.refetch();
- }, [logsQ, totalKey]);
+  void Promise.all([logsQ.refetch(), countQ.refetch()]);
+ }, [logsQ, countQ, totalKey]);
 
  return (
   <Stack spacing={2} sx={{ flex: 1, minHeight: 0, height: "100%" }}>

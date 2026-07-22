@@ -1,0 +1,1 @@
+CREATE INDEX "api_logs_project_env_ts_id_desc_idx" ON "api_logs" USING btree ("project_id","environment","timestamp" DESC NULLS LAST,"id" DESC NULLS LAST);

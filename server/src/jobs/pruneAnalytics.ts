@@ -9,21 +9,14 @@ import {
   type TopCallerEntry,
   type TopPathEntry,
 } from "../db/schema";
+import { analyticsTimezone, logRetentionDays } from "../lib/env";
 import { newId } from "../lib/ids";
 import { moment, now } from "../lib/time";
 
-const DEFAULT_RETENTION_DAYS = 14;
 const DEFAULT_INTERVAL_MS = 60 * 60 * 1000;
 const TOP_N = 20;
 
-export function analyticsTimezone(): string {
-  return process.env.ANALYTICS_TIMEZONE?.trim() || "UTC";
-}
-
-export function logRetentionDays(): number {
-  const n = Number(process.env.LOG_RETENTION_DAYS ?? DEFAULT_RETENTION_DAYS);
-  return Number.isFinite(n) && n >= 1 ? Math.floor(n) : DEFAULT_RETENTION_DAYS;
-}
+export { analyticsTimezone, logRetentionDays };
 
 function pruneIntervalMs(): number {
   const n = Number(process.env.PRUNE_JOB_INTERVAL_MS ?? DEFAULT_INTERVAL_MS);
@@ -36,6 +29,12 @@ function dayBounds(bucketDate: string, tz: string): { start: Date; endExclusive:
     start: start.toDate(),
     endExclusive: start.clone().add(1, "day").toDate(),
   };
+}
+
+function normalizeBucketDate(raw: unknown): string {
+  if (typeof raw === "string") return raw.slice(0, 10);
+  if (raw instanceof Date) return moment.utc(raw).format("YYYY-MM-DD");
+  return String(raw).slice(0, 10);
 }
 
 type DayKey = { projectId: string; environment: string; bucketDate: string };
@@ -345,32 +344,33 @@ export async function queryAnalyticsRange(opts: {
     topCallers: TopCallerEntry[];
     source: "analytics" | "live";
   }> = stored.map((r) => ({
-    date: String(r.bucketDate),
-    totalRequests: r.totalRequests,
-    success2xx: r.success2xx,
-    clientError4xx: r.clientError4xx,
-    serverError5xx: r.serverError5xx,
-    avgResponseTimeMs: r.avgResponseTimeMs,
-    p95ResponseTimeMs: r.p95ResponseTimeMs,
-    uniquePaths: r.uniquePaths,
-    uniqueCallers: r.uniqueCallers,
-    statusCodeDistribution: r.statusCodeDistribution,
-    methodDistribution: r.methodDistribution,
-    topPaths: r.topPaths,
-    topCallers: r.topCallers,
+    date: normalizeBucketDate(r.bucketDate),
+    totalRequests: Number(r.totalRequests),
+    success2xx: Number(r.success2xx),
+    clientError4xx: Number(r.clientError4xx),
+    serverError5xx: Number(r.serverError5xx),
+    avgResponseTimeMs: Number(r.avgResponseTimeMs),
+    p95ResponseTimeMs: Number(r.p95ResponseTimeMs),
+    uniquePaths: Number(r.uniquePaths),
+    uniqueCallers: Number(r.uniqueCallers),
+    statusCodeDistribution: r.statusCodeDistribution ?? {},
+    methodDistribution: r.methodDistribution ?? {},
+    topPaths: r.topPaths ?? [],
+    topCallers: r.topCallers ?? [],
     source: "analytics" as const,
   }));
 
-  // Fill today (and any missing in-range days still in raw logs) from live data.
+  // Only live-fill today (incomplete bucket). Historical gaps wait for the prune job —
+  // scanning every missing day over a remote DB times out the dashboard.
   const have = new Set(days.map((d) => d.date));
-  const cursor = start.clone();
-  while (cursor.isSameOrBefore(end, "day")) {
-    const d = cursor.format("YYYY-MM-DD");
-    if (!have.has(d) && cursor.isSameOrBefore(today, "day")) {
-      const live = await liveDayStats(opts.projectId, opts.environment, d, tz);
+  const todayKey = today.format("YYYY-MM-DD");
+  if (start.isSameOrBefore(today, "day") && end.isSameOrAfter(today, "day") && !have.has(todayKey)) {
+    try {
+      const live = await liveDayStats(opts.projectId, opts.environment, todayKey, tz);
       if (live) days.push({ ...live, source: "live" });
+    } catch (e) {
+      console.error("[analytics] live today failed", e);
     }
-    cursor.add(1, "day");
   }
 
   days.sort((a, b) => a.date.localeCompare(b.date));
