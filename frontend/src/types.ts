@@ -52,6 +52,44 @@ export type LogsStats = {
   projectId: string;
 };
 
+export type AnalyticsDay = {
+  date: string;
+  totalRequests: number;
+  success2xx: number;
+  clientError4xx: number;
+  serverError5xx: number;
+  avgResponseTimeMs: number;
+  p95ResponseTimeMs: number;
+  uniquePaths: number;
+  uniqueCallers: number;
+  statusCodeDistribution: Record<string, number>;
+  methodDistribution: Record<string, number>;
+  topPaths: { path: string; count: number }[];
+  topCallers: { callerId: string | null; name: string | null; count: number }[];
+  source: "analytics" | "live";
+};
+
+export type LogsAnalytics = {
+  dateFrom: string;
+  dateTo: string;
+  timeZone: string;
+  summary: {
+    totalRequests: number;
+    success2xx: number;
+    clientError4xx: number;
+    serverError5xx: number;
+    avgResponseTimeMs: number;
+    p95ResponseTimeMs: number;
+    uniquePaths: number;
+    uniqueCallers: number;
+    statusCodeDistribution: Record<string, number>;
+    methodDistribution: Record<string, number>;
+    topPaths: { path: string; count: number }[];
+    topCallers: { callerId: string | null; name: string | null; count: number }[];
+  };
+  days: AnalyticsDay[];
+};
+
 export type LogHeadersRow = {
   id?: string;
   logId?: string;

@@ -251,14 +251,19 @@ export function buildLogsListQuerySchema(timeZone: string) {
     const searchFieldsStr = q.searchFields ?? q.search_fields;
 
     const today = moment().tz(timeZone).format("YYYY-MM-DD");
-    const fromRaw = q.dateFrom ?? q.from ?? q.date;
-    const toRaw = q.dateTo ?? q.to ?? q.dateFrom ?? q.from ?? q.date;
+    // Prefer explicit range ends; only fall back across aliases (not across from↔to),
+    // except a lone end date also seeds the start so we don't span “today → dateTo”.
+    const fromRaw = q.dateFrom ?? q.from ?? q.date ?? q.dateTo ?? q.to;
+    const toRaw = q.dateTo ?? q.to ?? q.date ?? q.dateFrom ?? q.from;
     const fromStr = fromRaw && DATE_RE.test(fromRaw) ? fromRaw : today;
     const toStr = toRaw && DATE_RE.test(toRaw) ? toRaw : fromStr;
-    const fromDay = moment.tz(fromStr, "YYYY-MM-DD", timeZone);
-    const toDay = moment.tz(toStr, "YYYY-MM-DD", timeZone);
+    const fromDay = moment.tz(fromStr, "YYYY-MM-DD", true, timeZone);
+    const toDay = moment.tz(toStr, "YYYY-MM-DD", true, timeZone);
     const rangeStart = fromDay.isSameOrBefore(toDay, "day") ? fromDay : toDay;
     const rangeEnd = fromDay.isSameOrBefore(toDay, "day") ? toDay : fromDay;
+    // Inclusive calendar days as [startOf(from), startOf(to+1)) — avoids end-of-day ms gaps.
+    const fromDate = rangeStart.clone().startOf("day").toDate();
+    const toDateExclusive = rangeEnd.clone().add(1, "day").startOf("day").toDate();
 
     const filter: {
       environment?: string;
@@ -290,8 +295,8 @@ export function buildLogsListQuerySchema(timeZone: string) {
       offset: q.offset,
       withCount: q.withCount,
       sort: { field: q.sort ?? "timestamp", order: q.order ?? "desc" },
-      fromDate: rangeStart.clone().startOf("day").toDate(),
-      toDate: rangeEnd.clone().endOf("day").toDate(),
+      fromDate,
+      toDate: toDateExclusive,
       date: rangeStart.format("YYYY-MM-DD"),
       dateFrom: rangeStart.format("YYYY-MM-DD"),
       dateTo: rangeEnd.format("YYYY-MM-DD"),

@@ -1,5 +1,5 @@
 import axios, { type AxiosError } from "axios";
-import type { ApiLog, Caller, Environment, LogDetailData, LogsStats, Project } from "../types";
+import type { ApiLog, Caller, Environment, LogDetailData, LogsAnalytics, LogsStats, Project } from "../types";
 
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_URL || "",
@@ -133,6 +133,22 @@ export async function fetchLogsStats(apiKey: string, environment: Environment): 
 export async function fetchLogPaths(apiKey: string, environment: Environment): Promise<string[]> {
   const { data } = await api.get<{ data: string[] }>("/api/v1/logs/paths", {
     headers: logHeaders(apiKey, environment),
+  });
+  return data.data;
+}
+
+export async function fetchLogsAnalytics(
+  apiKey: string,
+  environment: Environment,
+  params?: { dateFrom?: string; dateTo?: string; days?: number },
+): Promise<LogsAnalytics> {
+  const { data } = await api.get<{ data: LogsAnalytics }>("/api/v1/logs/analytics", {
+    headers: logHeaders(apiKey, environment),
+    params: {
+      dateFrom: params?.dateFrom,
+      dateTo: params?.dateTo,
+      days: params?.days,
+    },
   });
   return data.data;
 }

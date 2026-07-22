@@ -1,6 +1,8 @@
 import {
   bigint,
   boolean,
+  date,
+  doublePrecision,
   index,
   integer,
   jsonb,
@@ -128,5 +130,44 @@ export const apiLogBodies = pgTable(
   },
   (t) => [
     uniqueIndex("api_log_bodies_log_id_unq").on(t.logId),
+  ],
+);
+
+export type StatusDistribution = Record<string, number>;
+export type MethodDistribution = Record<string, number>;
+export type TopPathEntry = { path: string; count: number };
+export type TopCallerEntry = { callerId: string | null; name: string | null; count: number };
+
+/**
+ * Daily rollups kept after raw logs are pruned.
+ * `bucketDate` is a calendar day in ANALYTICS_TIMEZONE (see jobs/pruneAnalytics).
+ */
+export const apiLogDailyAnalytics = pgTable(
+  "api_log_daily_analytics",
+  {
+    id: uuid("id").primaryKey(),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    environment: text("environment").notNull(),
+    bucketDate: date("bucket_date").notNull(),
+    totalRequests: bigint("total_requests", { mode: "number" }).notNull().default(0),
+    success2xx: bigint("success_2xx", { mode: "number" }).notNull().default(0),
+    clientError4xx: bigint("client_error_4xx", { mode: "number" }).notNull().default(0),
+    serverError5xx: bigint("server_error_5xx", { mode: "number" }).notNull().default(0),
+    avgResponseTimeMs: doublePrecision("avg_response_time_ms").notNull().default(0),
+    p95ResponseTimeMs: doublePrecision("p95_response_time_ms").notNull().default(0),
+    uniquePaths: integer("unique_paths").notNull().default(0),
+    uniqueCallers: integer("unique_callers").notNull().default(0),
+    statusCodeDistribution: jsonb("status_code_distribution").$type<StatusDistribution>().notNull().default({}),
+    methodDistribution: jsonb("method_distribution").$type<MethodDistribution>().notNull().default({}),
+    topPaths: jsonb("top_paths").$type<TopPathEntry[]>().notNull().default([]),
+    topCallers: jsonb("top_callers").$type<TopCallerEntry[]>().notNull().default([]),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
+  },
+  (t) => [
+    uniqueIndex("api_log_daily_analytics_project_env_date_unq").on(t.projectId, t.environment, t.bucketDate),
+    index("api_log_daily_analytics_project_date_idx").on(t.projectId, t.bucketDate),
   ],
 );

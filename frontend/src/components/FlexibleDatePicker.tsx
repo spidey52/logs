@@ -461,7 +461,14 @@ export function FlexibleDatePicker({
 
   const picker =
     mode === "single" ? (
-      <Picker {...shared} selected={value.start} onSelect={(d: Date | null) => d && commitSingle(d)} shouldCloseOnSelect>
+      <Picker
+        {...shared}
+        selected={value.start}
+        shouldCloseOnSelect
+        onChange={(d: Date | null) => {
+          if (d) commitSingle(d);
+        }}
+      >
         {footer}
       </Picker>
     ) : (

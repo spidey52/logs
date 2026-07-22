@@ -1,7 +1,7 @@
 import RefreshIcon from "@mui/icons-material/Refresh";
 import { Button, Chip, Stack, TextField, Typography } from "@mui/material";
 import type { GridColDef, GridSortModel } from "@mui/x-data-grid";
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { shallow, useStore } from "@tanstack/react-store";
 import moment from "moment";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -219,13 +219,21 @@ export function LogsPage() {
    };
   },
   enabled: !!selected,
-  placeholderData: keepPreviousData,
+  // Only keep previous page while flipping pages — never across filter/sort changes
+  // (otherwise old rows linger with no spinner and filters look broken).
+  placeholderData: (previousData, previousQuery) => {
+   const prevKey = previousQuery?.queryKey;
+   if (!prevKey || !selected) return undefined;
+   const prevFilters = prevKey[3];
+   const prevSort = prevKey[4];
+   if (prevFilters === filtersKey && prevSort === sortKey) return previousData;
+   return undefined;
+  },
  });
 
  const rows = logsQ.data?.data ?? [];
  const total = logsQ.data?.total ?? totalsCache.current.get(totalKey) ?? 0;
- // Keep previous rows visible while refetching — overlay only on cold loads
- const gridLoading = logsQ.isPending || (logsQ.isFetching && !logsQ.isPlaceholderData);
+ const gridLoading = logsQ.isPending || logsQ.isFetching;
 
  useEffect(() => {
   const maxPage = Math.max(0, Math.ceil(total / PAGE_SIZE) - 1);

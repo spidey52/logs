@@ -42,9 +42,26 @@ Set `VITE_API_URL` when serving the built UI from another origin (see `frontend/
 | CRUD | `/api/v1/callers` | Per-project callers (`project_id` + unique `identifier`) |
 | POST | `/api/v1/logs` | Ingest (requires `X-API-Key`, `X-Environment`) |
 | POST | `/api/v1/logs/batch` | Batch ingest |
-| GET | `/api/v1/logs` | List + filters |
+| GET | `/api/v1/logs` | List + filters (`dateFrom`/`dateTo`, methods, statusCodes, search, callerIds, …). Scoped to auth environment. Send `X-Timezone` for calendar-day bounds. |
+| GET | `/api/v1/logs/stats` | Today’s totals for the project env |
+| GET | `/api/v1/logs/paths` | Distinct paths today |
+| GET | `/api/v1/logs/analytics` | Daily rollups (`days` or `dateFrom`/`dateTo`) from `api_log_daily_analytics` + live today |
 | GET | `/api/v1/logs/:id` | One log |
 | GET | `/api/v1/logs/:id/details` | Log + headers + body |
+
+### Retention & analytics job
+
+On server start a background job (see `server/src/jobs/pruneAnalytics.ts`):
+
+1. Aggregates completed calendar days into `api_log_daily_analytics`
+2. Deletes raw `api_logs` older than `LOG_RETENTION_DAYS` (headers/bodies cascade)
+
+| Env | Default | Meaning |
+|-----|---------|---------|
+| `LOG_RETENTION_DAYS` | `14` | Keep raw logs this many days |
+| `ANALYTICS_TIMEZONE` | `UTC` | Calendar used for daily buckets |
+| `PRUNE_JOB_INTERVAL_MS` | `3600000` | Job cadence |
+| `PRUNE_JOB_ENABLED` | on | Set `0` / `false` to disable |
 
 Primary keys are **UUID v7** (time-ordered), generated in the app.
 

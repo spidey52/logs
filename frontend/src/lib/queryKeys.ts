@@ -7,6 +7,7 @@ export const qk = {
   health: ["health"] as const,
   logsStats: (projectId: string) => ["logs", "stats", projectId] as const,
   logPaths: (projectId: string) => ["logs", "paths", projectId] as const,
+  logsAnalytics: (projectId: string, rangeKey: string) => ["logs", "analytics", projectId, rangeKey] as const,
   callersInfinite: (projectId: string) => ["callers", "infinite", projectId] as const,
   logsPage: (projectId: string, filtersKey: string, sortKey: string, offset: number) =>
     ["logs", "page", projectId, filtersKey, sortKey, offset] as const,

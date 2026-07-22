@@ -20,6 +20,7 @@ import {
   type LogFilter,
   type LogListSort,
 } from "./services/logQueries";
+import { queryAnalyticsRange, analyticsTimezone } from "./jobs/pruneAnalytics";
 import {
   buildLogsListQuerySchema,
   callerCreateBody,
@@ -35,6 +36,8 @@ import {
   projectUpdateBody,
   uuidParam,
 } from "./validation";
+import { z } from "zod";
+import { moment } from "./lib/time";
 
 async function insertLogExtras(
   logId: string,
@@ -428,12 +431,24 @@ export function createApp() {
 
   logs.get("/", async (c) => {
     const projectId = c.get("projectId");
+    const environment = c.get("environment");
     const tz = resolveRequestTimezone(c.req.header("X-Timezone"));
     const q = parseQuery(c, buildLogsListQuerySchema(tz));
     if (q instanceof Response) return q;
 
-    const { limit, offset, withCount, sort, date: _date, ...filterRest } = q;
-    const filter: LogFilter = { projectId, ...filterRest };
+    // Strip response-only / UI echo fields; always scope to the authenticated environment.
+    const {
+      limit,
+      offset,
+      withCount,
+      sort,
+      date: _date,
+      dateFrom: _dateFrom,
+      dateTo: _dateTo,
+      environment: _environment,
+      ...filterRest
+    } = q;
+    const filter: LogFilter = { projectId, environment, ...filterRest };
     const sortOpts: LogListSort = sort;
 
     const { rows, total } = await queryLogsPage(filter, {
@@ -474,12 +489,64 @@ export function createApp() {
     return c.json({ data: paths });
   });
 
+  logs.get("/analytics", async (c) => {
+    const projectId = c.get("projectId");
+    const environment = c.get("environment");
+    // Daily buckets are written in ANALYTICS_TIMEZONE — keep reads on the same calendar.
+    const tz = analyticsTimezone();
+    const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+    const analyticsQuery = z
+      .object({
+        dateFrom: z.string().optional(),
+        dateTo: z.string().optional(),
+        from: z.string().optional(),
+        to: z.string().optional(),
+        days: z.coerce.number().int().min(1).max(90).optional(),
+      })
+      .superRefine((data, ctx) => {
+        for (const key of ["dateFrom", "dateTo", "from", "to"] as const) {
+          const v = data[key];
+          if (v && !DATE_RE.test(v)) {
+            ctx.addIssue({ code: z.ZodIssueCode.custom, message: `${key} must be YYYY-MM-DD`, path: [key] });
+          }
+        }
+      })
+      .transform((q) => {
+        const today = moment().tz(tz).format("YYYY-MM-DD");
+        const span = q.days ?? 14;
+        const defaultFrom = moment().tz(tz).subtract(span - 1, "days").format("YYYY-MM-DD");
+        const fromRaw = q.dateFrom ?? q.from ?? defaultFrom;
+        const toRaw = q.dateTo ?? q.to ?? today;
+        return {
+          dateFrom: DATE_RE.test(fromRaw) ? fromRaw : defaultFrom,
+          dateTo: DATE_RE.test(toRaw) ? toRaw : today,
+        };
+      });
+
+    const q = parseQuery(c, analyticsQuery);
+    if (q instanceof Response) return q;
+
+    const data = await queryAnalyticsRange({
+      projectId,
+      environment,
+      dateFrom: q.dateFrom,
+      dateTo: q.dateTo,
+      timeZone: tz,
+    });
+    return c.json({ data });
+  });
+
   logs.get("/:id/details", async (c) => {
     const projectId = c.get("projectId");
+    const environment = c.get("environment");
     const idParse = uuidParam.safeParse(c.req.param("id"));
     if (!idParse.success) return c.json({ error: "validation_error", issues: idParse.error.flatten() }, 400);
     const id = idParse.data;
-    const [row] = await db.select().from(apiLogs).where(and(eq(apiLogs.id, id), eq(apiLogs.projectId, projectId))).limit(1);
+    const [row] = await db
+      .select()
+      .from(apiLogs)
+      .where(and(eq(apiLogs.id, id), eq(apiLogs.projectId, projectId), eq(apiLogs.environment, environment)))
+      .limit(1);
     if (!row) return c.json({ error: "not_found" }, 404);
 
     let caller = null;
@@ -501,11 +568,16 @@ export function createApp() {
 
   logs.get("/:id", async (c) => {
     const projectId = c.get("projectId");
+    const environment = c.get("environment");
     const id = c.req.param("id");
-    if (["batch", "stats", "paths"].includes(id)) return c.notFound();
+    if (["batch", "stats", "paths", "analytics"].includes(id)) return c.notFound();
     const idParse = uuidParam.safeParse(id);
     if (!idParse.success) return c.json({ error: "validation_error", issues: idParse.error.flatten() }, 400);
-    const [row] = await db.select().from(apiLogs).where(and(eq(apiLogs.id, idParse.data), eq(apiLogs.projectId, projectId))).limit(1);
+    const [row] = await db
+      .select()
+      .from(apiLogs)
+      .where(and(eq(apiLogs.id, idParse.data), eq(apiLogs.projectId, projectId), eq(apiLogs.environment, environment)))
+      .limit(1);
     if (!row) return c.json({ error: "not_found" }, 404);
     return c.json({ data: row });
   });

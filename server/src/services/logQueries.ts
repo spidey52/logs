@@ -1,4 +1,4 @@
-import { and, asc, avg, count, desc, eq, getTableColumns, gte, inArray, lte, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, avg, count, desc, eq, getTableColumns, gte, inArray, lt, lte, or, sql, type SQL } from "drizzle-orm";
 import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import { moment } from "../lib/time";
 import { db } from "../db";
@@ -114,7 +114,8 @@ function logWhereParts(filter: LogFilter) {
     );
   }
   if (filter.fromDate) parts.push(gte(apiLogs.timestamp, filter.fromDate));
-  if (filter.toDate) parts.push(lte(apiLogs.timestamp, filter.toDate));
+  // `toDate` is exclusive (start of the day after the selected end date).
+  if (filter.toDate) parts.push(lt(apiLogs.timestamp, filter.toDate));
   return and(...parts);
 }
 
@@ -146,6 +147,7 @@ export async function queryLogsPage(
 ): Promise<{ rows: LogListRow[]; total: number | null; limit: number; offset: number }> {
   const where = logWhereParts(filter);
   const ob = orderByClause(opts.sort.field, opts.sort.order);
+  const needsCallerJoin = Boolean(filter.callerSearch) || opts.sort.field === "caller";
 
   const selectShape = {
     ...getTableColumns(apiLogs),
@@ -156,29 +158,23 @@ export async function queryLogsPage(
     },
   };
 
+  // Separate COUNT is far cheaper than COUNT(*) OVER() on large date ranges.
+  let total: number | null = null;
   if (opts.withCount) {
-    const rows = await db
-      .select({
-        ...selectShape,
-        _total: sql<string>`(count(*) over ())::text`,
-      })
-      .from(apiLogs)
-      .leftJoin(callers, eq(apiLogs.callerId, callers.id))
-      .where(where)
-      .orderBy(...ob)
-      .limit(opts.limit)
-      .offset(opts.offset);
-
-    if (!rows.length) {
+    if (needsCallerJoin) {
+      const [row] = await db
+        .select({ n: count() })
+        .from(apiLogs)
+        .leftJoin(callers, eq(apiLogs.callerId, callers.id))
+        .where(where);
+      total = Number(row?.n ?? 0);
+    } else {
+      const [row] = await db.select({ n: count() }).from(apiLogs).where(where);
+      total = Number(row?.n ?? 0);
+    }
+    if (total === 0) {
       return { rows: [], total: 0, limit: opts.limit, offset: opts.offset };
     }
-
-    const total = Number(rows[0]!._total);
-    const clean: LogListRow[] = rows.map(({ _total: _, ...r }) => ({
-      ...r,
-      caller: r.caller?.id ? r.caller : null,
-    }));
-    return { rows: clean, total, limit: opts.limit, offset: opts.offset };
   }
 
   const rows = await db
@@ -194,7 +190,7 @@ export async function queryLogsPage(
     ...r,
     caller: r.caller?.id ? r.caller : null,
   }));
-  return { rows: clean, total: null, limit: opts.limit, offset: opts.offset };
+  return { rows: clean, total, limit: opts.limit, offset: opts.offset };
 }
 
 function startOfToday(timeZone: string): Date {
