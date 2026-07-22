@@ -8,7 +8,6 @@ import {
   Card,
   CardContent,
   CircularProgress,
-  LinearProgress,
   List,
   ListItem,
   ListItemText,
@@ -23,11 +22,10 @@ import moment from "moment";
 import { useMemo, useState } from "react";
 import { fetchLogPaths, fetchLogsAnalytics, fetchLogsStats } from "../api/client";
 import { PageHeader } from "../components/PageHeader";
-import { StatusCodeChip } from "../components/StatusCodeChip";
 import { useProjectWorkspace } from "../hooks/useProjectWorkspace";
 import { useToastOnChange } from "../hooks/useToastOnChange";
 import { qk } from "../lib/queryKeys";
-import type { LogsAnalytics, LogsStats } from "../types";
+import type { LogsAnalytics } from "../types";
 
 type RangeDays = 7 | 14 | 30;
 
@@ -80,14 +78,6 @@ function StatCard({
   );
 }
 
-function distributionRows(stats: LogsStats | null | undefined) {
-  if (!stats) return [];
-  return Object.entries(stats.statusCodeDistribution)
-    .map(([code, count]) => ({ code: Number(code), count }))
-    .filter((r) => !Number.isNaN(r.code))
-    .sort((a, b) => a.code - b.code);
-}
-
 function browserTimeZoneLabel(): string {
   try {
     return Intl.DateTimeFormat().resolvedOptions().timeZone || "local time";
@@ -133,42 +123,93 @@ function SparkBars({
   );
 }
 
-function MethodBars({ dist }: { dist: Record<string, number> }) {
-  const rows = Object.entries(dist)
-    .map(([method, count]) => ({ method, count }))
-    .sort((a, b) => b.count - a.count);
-  const max = Math.max(1, ...rows.map((r) => r.count));
-  if (!rows.length) {
+type OutcomeBucket = {
+  key: string;
+  label: string;
+  count: number;
+  color: string;
+};
+
+function rollupOutcomes(dist: Record<string, number>): OutcomeBucket[] {
+  let ok = 0;
+  let redirect = 0;
+  let client = 0;
+  let server = 0;
+  for (const [codeStr, count] of Object.entries(dist)) {
+    const code = Number(codeStr);
+    if (Number.isNaN(code)) continue;
+    if (code >= 500) server += count;
+    else if (code >= 400) client += count;
+    else if (code >= 300) redirect += count;
+    else if (code >= 200) ok += count;
+  }
+  return [
+    { key: "2xx", label: "Success (2xx)", count: ok, color: "#059669" },
+    { key: "3xx", label: "Redirect (3xx)", count: redirect, color: "#0284c7" },
+    { key: "4xx", label: "Client error (4xx)", count: client, color: "#d97706" },
+    { key: "5xx", label: "Server error (5xx)", count: server, color: "#dc2626" },
+  ].filter((b) => b.count > 0 || b.key === "2xx" || b.key === "4xx" || b.key === "5xx");
+}
+
+function OutcomeMix({
+  buckets,
+  emptyLabel,
+}: {
+  buckets: OutcomeBucket[];
+  emptyLabel: string;
+}) {
+  const total = buckets.reduce((s, b) => s + b.count, 0);
+  if (total === 0) {
     return (
       <Typography color="text.secondary" variant="body2">
-        No method data in this range.
+        {emptyLabel}
       </Typography>
     );
   }
   return (
-    <Stack spacing={1.25}>
-      {rows.map(({ method, count }) => (
-        <Stack key={method} direction="row" alignItems="center" spacing={1.5}>
-          <Typography variant="body2" fontWeight={700} sx={{ minWidth: 56, fontFamily: "ui-monospace, monospace" }}>
-            {method}
-          </Typography>
-          <Box sx={{ flex: 1 }}>
-            <LinearProgress
-              variant="determinate"
-              value={(count / max) * 100}
+    <Stack spacing={1.5}>
+      <Box
+        sx={{
+          display: "flex",
+          height: 12,
+          borderRadius: 1,
+          overflow: "hidden",
+          bgcolor: alpha("#64748b", 0.1),
+        }}
+      >
+        {buckets.map((b) =>
+          b.count > 0 ? (
+            <Box
+              key={b.key}
+              title={`${b.label}: ${b.count.toLocaleString()}`}
               sx={{
-                height: 8,
-                borderRadius: 1,
-                bgcolor: alpha("#64748b", 0.12),
-                "& .MuiLinearProgress-bar": { borderRadius: 1, bgcolor: "#1d4ed8" },
+                width: `${(b.count / total) * 100}%`,
+                bgcolor: b.color,
+                minWidth: b.count > 0 ? 2 : 0,
               }}
             />
-          </Box>
-          <Typography variant="body2" fontWeight={700} sx={{ minWidth: 56, textAlign: "right" }}>
-            {count.toLocaleString()}
-          </Typography>
-        </Stack>
-      ))}
+          ) : null,
+        )}
+      </Box>
+      <Stack spacing={1}>
+        {buckets.map((b) => {
+          const pct = total > 0 ? (b.count / total) * 100 : 0;
+          return (
+            <Stack key={b.key} direction="row" alignItems="center" spacing={1.25}>
+              <Box sx={{ width: 8, height: 8, borderRadius: 0.5, bgcolor: b.color, flexShrink: 0 }} />
+              <Typography variant="body2" sx={{ flex: 1, minWidth: 0 }}>
+                {b.label}
+              </Typography>
+              <Typography variant="body2" color="text.secondary" sx={{ fontVariantNumeric: "tabular-nums" }}>
+                {pct.toFixed(1)}%
+              </Typography>
+              <Typography variant="body2" fontWeight={700} sx={{ minWidth: 56, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
+                {b.count.toLocaleString()}
+              </Typography>
+            </Stack>
+          );
+        })}
+      </Stack>
     </Stack>
   );
 }
@@ -229,8 +270,46 @@ export function DashboardPage() {
         : null;
   const analyticsErr = analyticsQ.error instanceof Error ? analyticsQ.error.message : null;
 
-  const rows = useMemo(() => distributionRows(stats), [stats]);
-  const maxCount = useMemo(() => Math.max(1, ...rows.map((r) => r.count)), [rows]);
+  const todayOutcomes = useMemo(
+    () => rollupOutcomes(stats?.statusCodeDistribution ?? {}),
+    [stats],
+  );
+  const rangeOutcomes = useMemo(() => {
+    if (!analytics) return [];
+    // Prefer class totals from summary when available (faster / consistent with cards).
+    const fromSummary: OutcomeBucket[] = [
+      {
+        key: "2xx",
+        label: "Success (2xx)",
+        count: analytics.summary.success2xx,
+        color: "#059669",
+      },
+      {
+        key: "4xx",
+        label: "Client error (4xx)",
+        count: analytics.summary.clientError4xx,
+        color: "#d97706",
+      },
+      {
+        key: "5xx",
+        label: "Server error (5xx)",
+        count: analytics.summary.serverError5xx,
+        color: "#dc2626",
+      },
+    ];
+    // Fill 3xx from status distribution if present.
+    const rolled = rollupOutcomes(analytics.summary.statusCodeDistribution);
+    const redirect = rolled.find((b) => b.key === "3xx");
+    if (redirect && redirect.count > 0) {
+      return [
+        fromSummary[0]!,
+        redirect,
+        fromSummary[1]!,
+        fromSummary[2]!,
+      ];
+    }
+    return fromSummary;
+  }, [analytics]);
 
   const volumeSeries = useMemo(() => {
     const days = analytics?.days ?? [];
@@ -302,7 +381,7 @@ export function DashboardPage() {
             <StatCard
               title="Avg response"
               value={`${Math.round(stats.averageResponseTimeMs)} ms`}
-              subtitle="Same window as distribution"
+              subtitle={`Since midnight · ${timeZoneLabel}`}
               icon={<TrendingUpIcon />}
               accent="#059669"
             />
@@ -430,9 +509,9 @@ export function DashboardPage() {
               <Card>
                 <CardContent>
                   <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-                    Methods ({rangeDays}d)
+                    Traffic outcomes ({rangeDays}d)
                   </Typography>
-                  <MethodBars dist={analytics.summary.methodDistribution} />
+                  <OutcomeMix buckets={rangeOutcomes} emptyLabel="No traffic in this range." />
                 </CardContent>
               </Card>
             </Box>
@@ -448,45 +527,9 @@ export function DashboardPage() {
             <Card>
               <CardContent>
                 <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-                  Status distribution for today ({timeZoneLabel})
+                  Today&apos;s outcomes ({timeZoneLabel})
                 </Typography>
-                <Stack spacing={1.5}>
-                  {rows.length === 0 && (
-                    <Typography color="text.secondary" variant="body2">
-                      No data yet — ingest some logs to see breakdown.
-                    </Typography>
-                  )}
-                  {rows.map(({ code, count }) => (
-                    <Stack key={code} direction="row" alignItems="center" spacing={1.5}>
-                      <StatusCodeChip code={code} size="small" />
-                      <Box sx={{ flex: 1 }}>
-                        <LinearProgress
-                          variant="determinate"
-                          value={(count / maxCount) * 100}
-                          sx={{
-                            height: 8,
-                            borderRadius: 1,
-                            bgcolor: alpha("#64748b", 0.12),
-                            "& .MuiLinearProgress-bar": {
-                              borderRadius: 1,
-                              bgcolor:
-                                code >= 500
-                                  ? "error.main"
-                                  : code >= 400
-                                    ? "warning.main"
-                                    : code >= 300
-                                      ? "info.main"
-                                      : "success.main",
-                            },
-                          }}
-                        />
-                      </Box>
-                      <Typography variant="body2" fontWeight={700} sx={{ minWidth: 48, textAlign: "right" }}>
-                        {count}
-                      </Typography>
-                    </Stack>
-                  ))}
-                </Stack>
+                <OutcomeMix buckets={todayOutcomes} emptyLabel="No data yet — ingest some logs to see breakdown." />
               </CardContent>
             </Card>
 

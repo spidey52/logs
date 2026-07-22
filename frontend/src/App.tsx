@@ -2,9 +2,11 @@ import { CssBaseline, ThemeProvider } from "@mui/material";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { AppLayout } from "./components/AppLayout";
 import { ToastHost } from "./components/ToastHost";
+import { CallerLogsPage } from "./pages/CallerLogsPage";
 import { DashboardPage } from "./pages/DashboardPage";
 import { LogsPage } from "./pages/LogsPage";
 import { ProjectsPage } from "./pages/ProjectsPage";
+import { SlowRequestsPage } from "./pages/SlowRequestsPage";
 import { UsersPage } from "./pages/UsersPage";
 import { appTheme } from "./theme";
 
@@ -19,6 +21,8 @@ export default function App() {
             <Route index element={<DashboardPage />} />
             <Route path="dashboard" element={<DashboardPage />} />
             <Route path="logs" element={<LogsPage />} />
+            <Route path="caller-logs" element={<CallerLogsPage />} />
+            <Route path="slow" element={<SlowRequestsPage />} />
             <Route path="projects" element={<ProjectsPage />} />
             <Route path="callers" element={<UsersPage />} />
             <Route path="*" element={<Navigate to="/" replace />} />

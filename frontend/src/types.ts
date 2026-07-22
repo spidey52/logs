@@ -90,6 +90,72 @@ export type LogsAnalytics = {
   days: AnalyticsDay[];
 };
 
+export type SlowBuckets = {
+  b500: number;
+  b1000: number;
+  b2000: number;
+  b5000: number;
+};
+
+export type SlowEndpointRow = {
+  path: string;
+  pattern: string;
+  total: number;
+  slow: number;
+  slowPct: number;
+  avgMs: number;
+  p95Ms: number;
+  maxMs: number;
+  buckets: SlowBuckets;
+};
+
+export type SlowPatternRow = {
+  pattern: string;
+  total: number;
+  slow: number;
+  slowPct: number;
+  endpoints: number;
+  buckets: SlowBuckets;
+};
+
+export type SlowSummary = {
+  thresholdMs: number;
+  totalRequests: number;
+  slowRequests: number;
+  totalEndpoints: number;
+  slowEndpoints: number;
+  buckets: SlowBuckets;
+  endpoints: SlowEndpointRow[];
+  patterns: SlowPatternRow[];
+};
+
+export type CallerSummaryRow = {
+  callerId: string;
+  name: string;
+  identifier: string;
+  total: number;
+  slow: number;
+  slowPct: number;
+  error4xx: number;
+  error5xx: number;
+  uniquePaths: number;
+  avgMs: number;
+  p95Ms: number;
+  maxMs: number;
+};
+
+export type CallerSummary = {
+  thresholdMs: number;
+  totalRequests: number;
+  slowRequests: number;
+  error4xx: number;
+  error5xx: number;
+  callerCount: number;
+  avgMs: number;
+  p95Ms: number;
+  callers: CallerSummaryRow[];
+};
+
 export type LogHeadersRow = {
   id?: string;
   logId?: string;

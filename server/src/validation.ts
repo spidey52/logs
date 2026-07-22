@@ -176,7 +176,7 @@ type SearchField = (typeof SEARCH_FIELD_VALUES)[number];
 const logsListQueryRaw = z
   .object({
     environment: z.string().optional(),
-    limit: z.coerce.number().int().min(1).max(1000).default(50),
+    limit: z.coerce.number().int().min(1).max(5000).default(50),
     offset: z.coerce.number().int().min(0).default(0),
     withCount: withCountQuery,
     sort: logSortFieldSchema.optional(),
@@ -184,6 +184,16 @@ const logsListQueryRaw = z
     method: z.string().optional(),
     methods: z.string().optional(),
     path: z.string().optional(),
+    exactPath: z.string().optional(),
+    exact_path: z.string().optional(),
+    excludePaths: z.string().optional(),
+    exclude_paths: z.string().optional(),
+    excludePathPrefixes: z.string().optional(),
+    exclude_path_prefixes: z.string().optional(),
+    excludePathContains: z.string().optional(),
+    exclude_path_contains: z.string().optional(),
+    excludeExactPaths: z.string().optional(),
+    exclude_exact_paths: z.string().optional(),
     search: z.string().optional(),
     searchFields: z.string().optional(),
     search_fields: z.string().optional(),
@@ -196,6 +206,8 @@ const logsListQueryRaw = z
     caller_ids: z.string().optional(),
     callerSearch: z.string().optional(),
     caller_search: z.string().optional(),
+    hasCaller: withCountQuery,
+    has_caller: withCountQuery,
     statusCode: z.string().optional(),
     statusCodes: z.string().optional(),
     status_codes: z.string().optional(),
@@ -204,12 +216,27 @@ const logsListQueryRaw = z
     dateTo: z.string().optional(),
     from: z.string().optional(),
     to: z.string().optional(),
+    minResponseTimeMs: z.string().optional(),
+    min_response_time_ms: z.string().optional(),
+    maxResponseTimeMs: z.string().optional(),
+    max_response_time_ms: z.string().optional(),
   })
   .superRefine((data, ctx) => {
     for (const key of ["date", "dateFrom", "dateTo", "from", "to"] as const) {
       const v = data[key];
       if (v && !DATE_RE.test(v)) {
         ctx.addIssue({ code: z.ZodIssueCode.custom, message: `${key} must be YYYY-MM-DD`, path: [key] });
+      }
+    }
+    for (const [key, alias] of [
+      ["minResponseTimeMs", "min_response_time_ms"],
+      ["maxResponseTimeMs", "max_response_time_ms"],
+    ] as const) {
+      const v = data[key] ?? data[alias];
+      if (v == null || v === "") continue;
+      const n = Number(v);
+      if (!Number.isFinite(n) || n < 0 || !Number.isInteger(n)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: `${key} must be a non-negative integer`, path: [key] });
       }
     }
     const cis = data.callerIds ?? data.caller_ids;
@@ -274,6 +301,9 @@ export function buildLogsListQuerySchema(timeZone: string) {
       method?: string;
       methods?: string[];
       path?: string;
+      exactPath?: string;
+      excludePathContains?: string[];
+      excludeExactPaths?: string[];
       search?: string;
       searchFields?: SearchField[];
       traceId?: string;
@@ -281,10 +311,13 @@ export function buildLogsListQuerySchema(timeZone: string) {
       callerId?: string;
       callerIds?: string[];
       callerSearch?: string;
+      hasCaller?: boolean;
       statusCode?: number;
       statusCodeMin?: number;
       statusCodeMax?: number;
       statusCodes?: number[];
+      minResponseTimeMs?: number;
+      maxResponseTimeMs?: number;
       fromDate: Date;
       toDate: Date;
       date: string;
@@ -309,6 +342,26 @@ export function buildLogsListQuerySchema(timeZone: string) {
       else if (methods.length > 1) filter.methods = methods;
     }
     if (q.path) filter.path = q.path;
+    const exactPath = q.exactPath ?? q.exact_path;
+    if (exactPath?.trim()) filter.exactPath = exactPath.trim();
+    const excludeContainsStr =
+      q.excludePathContains ??
+      q.exclude_path_contains ??
+      q.excludePathPrefixes ??
+      q.exclude_path_prefixes ??
+      q.excludePaths ??
+      q.exclude_paths;
+    if (excludeContainsStr?.trim()) {
+      filter.excludePathContains = [
+        ...new Set(excludeContainsStr.split(",").map((x) => x.trim()).filter(Boolean)),
+      ].slice(0, 100);
+    }
+    const excludeExactStr = q.excludeExactPaths ?? q.exclude_exact_paths;
+    if (excludeExactStr?.trim()) {
+      filter.excludeExactPaths = [
+        ...new Set(excludeExactStr.split(",").map((x) => x.trim()).filter(Boolean)),
+      ].slice(0, 200);
+    }
     if (q.search?.trim()) filter.search = q.search.trim();
     if (searchFieldsStr?.trim()) {
       filter.searchFields = [
@@ -328,6 +381,7 @@ export function buildLogsListQuerySchema(timeZone: string) {
       filter.callerId = callerIdSingle;
     }
     if (callerSearchRaw?.trim()) filter.callerSearch = callerSearchRaw.trim();
+    if (q.hasCaller || q.has_caller) filter.hasCaller = true;
 
     if (statusCodesStr?.trim()) {
       const nums = statusCodesStr
@@ -344,6 +398,17 @@ export function buildLogsListQuerySchema(timeZone: string) {
         const n = parseInt(q.statusCode, 10);
         if (!Number.isNaN(n)) filter.statusCode = n;
       }
+    }
+
+    const minMsRaw = q.minResponseTimeMs ?? q.min_response_time_ms;
+    if (minMsRaw != null && minMsRaw !== "") {
+      const n = parseInt(minMsRaw, 10);
+      if (!Number.isNaN(n) && n >= 0) filter.minResponseTimeMs = n;
+    }
+    const maxMsRaw = q.maxResponseTimeMs ?? q.max_response_time_ms;
+    if (maxMsRaw != null && maxMsRaw !== "") {
+      const n = parseInt(maxMsRaw, 10);
+      if (!Number.isNaN(n) && n >= 0) filter.maxResponseTimeMs = n;
     }
 
     return filter;

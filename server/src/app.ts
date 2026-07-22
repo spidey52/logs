@@ -16,7 +16,9 @@ import {
   countLogs,
   countLogsSinceStartOfDay,
   distinctPaths,
+  queryCallerSummary,
   queryLogsPage,
+  querySlowSummary,
   statusCodeDistribution as fetchStatusCodeDistribution,
   type LogFilter,
   type LogListSort,
@@ -514,6 +516,68 @@ export function createApp() {
     return c.json({ data: paths });
   });
 
+  /** Slow-endpoint summary: totals, latency buckets, per-path + pattern breakdown. */
+  logs.get("/slow-summary", async (c) => {
+    const projectId = c.get("projectId");
+    const environment = c.get("environment");
+    const tz = resolveRequestTimezone(c.req.header("X-Timezone"));
+    const q = parseQuery(c, buildLogsListQuerySchema(tz));
+    if (q instanceof Response) return q;
+
+    const {
+      limit,
+      offset: _offset,
+      withCount: _withCount,
+      sort: _sort,
+      date: _date,
+      dateFrom: _dateFrom,
+      dateTo: _dateTo,
+      environment: _environment,
+      minResponseTimeMs,
+      excludePathContains: _excludePathContains,
+      excludeExactPaths: _excludeExactPaths,
+      excludePaths: _excludePaths,
+      excludePathPrefixes: _excludePathPrefixes,
+      ...filterRest
+    } = q;
+    // Hide/skip filters are applied in the UI; summary returns the full endpoint set.
+    const filter: LogFilter = { projectId, environment, ...filterRest };
+    const data = await querySlowSummary(filter, {
+      thresholdMs: minResponseTimeMs ?? 500,
+      limit: Math.min(Math.max(limit || 2000, 1), 5000),
+    });
+    return c.json({ data });
+  });
+
+  /** Per-caller traffic summary (requests, slow, errors, latency). */
+  logs.get("/caller-summary", async (c) => {
+    const projectId = c.get("projectId");
+    const environment = c.get("environment");
+    const tz = resolveRequestTimezone(c.req.header("X-Timezone"));
+    const q = parseQuery(c, buildLogsListQuerySchema(tz));
+    if (q instanceof Response) return q;
+
+    const {
+      limit,
+      offset: _offset,
+      withCount: _withCount,
+      sort: _sort,
+      date: _date,
+      dateFrom: _dateFrom,
+      dateTo: _dateTo,
+      environment: _environment,
+      minResponseTimeMs,
+      hasCaller: _hasCaller,
+      ...filterRest
+    } = q;
+    const filter: LogFilter = { projectId, environment, ...filterRest };
+    const data = await queryCallerSummary(filter, {
+      thresholdMs: minResponseTimeMs ?? 1000,
+      limit: Math.min(Math.max(limit || 2000, 1), 5000),
+    });
+    return c.json({ data });
+  });
+
   logs.get("/analytics", async (c) => {
     const projectId = c.get("projectId");
     const environment = c.get("environment");
@@ -603,7 +667,7 @@ export function createApp() {
     const projectId = c.get("projectId");
     const environment = c.get("environment");
     const id = c.req.param("id");
-    if (["batch", "stats", "paths", "analytics", "count"].includes(id)) return c.notFound();
+    if (["batch", "stats", "paths", "analytics", "count", "slow-summary", "caller-summary"].includes(id)) return c.notFound();
     const idParse = uuidParam.safeParse(id);
     if (!idParse.success) return c.json({ error: "validation_error", issues: idParse.error.flatten() }, 400);
     const [row] = await db

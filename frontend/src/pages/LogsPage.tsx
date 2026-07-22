@@ -1,11 +1,12 @@
+import BlockIcon from "@mui/icons-material/Block";
 import RefreshIcon from "@mui/icons-material/Refresh";
-import { Button, Chip, Stack, TextField, Typography } from "@mui/material";
+import { Box, Button, Chip, IconButton, Stack, TextField, Tooltip, Typography } from "@mui/material";
 import type { GridColDef, GridSortModel } from "@mui/x-data-grid";
 import { useQuery } from "@tanstack/react-query";
 import { shallow, useStore } from "@tanstack/react-store";
 import moment from "moment";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { fetchLogDetail, listCallers, listLogs, countLogs } from "../api/client";
+import { fetchLogDetail, fetchLogPaths, listCallers, listLogs, countLogs } from "../api/client";
 import { DataGridTable } from "../components/DataGridTable";
 import { FlexibleDatePicker, type DateRangeValue } from "../components/FlexibleDatePicker";
 import { LogDetailDialog } from "../components/LogDetailDialog";
@@ -15,8 +16,8 @@ import { PageHeader } from "../components/PageHeader";
 import { StatusCodeChip } from "../components/StatusCodeChip";
 import { useProjectWorkspace } from "../hooks/useProjectWorkspace";
 import { useToastOnChange } from "../hooks/useToastOnChange";
-import { logsFiltersKey, logsSortKey, PAGE_SIZE, qk } from "../lib/queryKeys";
-import { LOG_METHOD_OPTIONS, patchLogsFilters, setLogsSort, uiStore, type LogSearchField, type LogsSortState } from "../store/uiStore";
+import { logsFiltersKey, logsSortKey, DEFAULT_PAGE_SIZE, PAGE_SIZE_OPTIONS, qk } from "../lib/queryKeys";
+import { LOG_METHOD_OPTIONS, normalizeSkipPattern, patchLogsFilters, pathMatchesSkipPattern, setLogsSort, suggestSkipPattern, uiStore, type LogSearchField, type LogsSortState } from "../store/uiStore";
 import type { ApiLog, Caller } from "../types";
 
 const METHOD_OPTIONS: MultiSelectOption[] = LOG_METHOD_OPTIONS.map((m) => ({
@@ -138,9 +139,10 @@ export function LogsPage() {
  const debouncedSearch = useDebouncedValue(searchInput, 300);
 
  const [page, setPage] = useState(0);
+ const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
  const filtersKey = useMemo(() => logsFiltersKey(filters), [filters]);
  const sortKey = useMemo(() => logsSortKey(logsSort), [logsSort]);
- const offset = page * PAGE_SIZE;
+ const offset = page * pageSize;
 
  useEffect(() => {
   setSearchInput(filters.search);
@@ -153,7 +155,7 @@ export function LogsPage() {
 
  useEffect(() => {
   setPage(0);
- }, [filtersKey, sortKey, selected?.id]);
+ }, [filtersKey, sortKey, pageSize, selected?.id]);
 
  const callersById = useRef(new Map<string, Caller>());
  useEffect(() => {
@@ -190,6 +192,38 @@ export function LogsPage() {
   [selected],
  );
 
+ const loadExcludePatternOptions = useCallback(
+  async (query: string): Promise<MultiSelectOption[]> => {
+   if (!selected) return [];
+   const q = query.trim().toLowerCase();
+   const paths = await fetchLogPaths(selected.apiKey, selected.environment);
+   const patternSet = new Set<string>();
+   for (const p of paths) {
+    const parts = p.split("/").filter(Boolean);
+    if (parts.length >= 1) patternSet.add(`/${parts[0]}`);
+    if (parts.length >= 2) patternSet.add(`/${parts[0]}/${parts[1]}`);
+   }
+   const patterns = [...patternSet].sort();
+   const matched = (q ? patterns.filter((p) => p.toLowerCase().includes(q)) : patterns).slice(0, 60);
+   const opts: MultiSelectOption[] = matched.map((p) => ({
+    value: p,
+    label: p,
+    description: `*${p}*`,
+   }));
+   const custom = normalizeSkipPattern(query);
+   if (custom && !opts.some((o) => o.value === custom)) {
+    opts.unshift({ value: custom, label: custom, description: `*${custom}*` });
+   }
+   return opts;
+  },
+  [selected],
+ );
+
+ const excludePatternSelectedOptions = useMemo(
+  () => filters.excludePathPatterns.map((p) => ({ value: p, label: p, description: `*${p}*` })),
+  [filters.excludePathPatterns],
+ );
+
  /** Avoid COUNT on every page flip — only recount when filters/sort change. */
  const totalsCache = useRef(new Map<string, number>());
  const totalKey = `${selected?.id ?? ""}|${filtersKey}|${sortKey}`;
@@ -205,6 +239,9 @@ export function LogsPage() {
    searchFields: filters.search.trim() && filters.searchFields.length ? filters.searchFields.join(",") : undefined,
    statusCodes: filters.statusCodes.length ? [...filters.statusCodes].sort((a, b) => a - b).join(",") : undefined,
    callerIds: filters.callerPicks.length ? filters.callerPicks.map((c) => c.id).join(",") : undefined,
+   excludePathContains: filters.excludePathPatterns.length
+    ? [...filters.excludePathPatterns].sort().join(",")
+    : undefined,
   };
  }, [filters]);
 
@@ -217,24 +254,20 @@ export function LogsPage() {
 
  // Page rows first (no COUNT) so the grid paints quickly on remote DBs.
  const logsQ = useQuery({
-  queryKey: selected ? qk.logsPage(selected.id, filtersKey, sortKey, offset) : ["logs", "page", "__none"],
-  queryFn: async () =>
-   listLogs(selected!.apiKey, selected!.environment, {
-    limit: PAGE_SIZE,
-    offset,
+  queryKey: selected ? qk.logsPage(selected.id, filtersKey, sortKey, pageSize, offset) : ["logs", "page", "__none"],
+  queryFn: async ({ queryKey }) => {
+   // Read limit/offset from the query key so page flips never reuse a stale closure.
+   const limit = typeof queryKey[5] === "number" ? queryKey[5] : DEFAULT_PAGE_SIZE;
+   const pageOffset = typeof queryKey[6] === "number" ? queryKey[6] : 0;
+   return listLogs(selected!.apiKey, selected!.environment, {
+    limit,
+    offset: pageOffset,
     ...filterParams,
     sort: logsSort.field,
     order: logsSort.order,
-   }),
-  enabled: !!selected,
-  placeholderData: (previousData, previousQuery) => {
-   const prevKey = previousQuery?.queryKey;
-   if (!prevKey || !selected) return undefined;
-   const prevFilters = prevKey[3];
-   const prevSort = prevKey[4];
-   if (prevFilters === filtersKey && prevSort === sortKey) return previousData;
-   return undefined;
+   });
   },
+  enabled: !!selected,
  });
 
  const countQ = useQuery({
@@ -249,13 +282,13 @@ export function LogsPage() {
  });
 
  const rows = logsQ.data?.data ?? [];
- const total = countQ.data ?? totalsCache.current.get(totalKey) ?? (rows.length > 0 ? offset + rows.length + (rows.length === PAGE_SIZE ? 1 : 0) : 0);
+ const total = countQ.data ?? totalsCache.current.get(totalKey) ?? (rows.length > 0 ? offset + rows.length + (rows.length === pageSize ? 1 : 0) : 0);
  const gridLoading = logsQ.isPending || logsQ.isFetching;
 
  useEffect(() => {
-  const maxPage = Math.max(0, Math.ceil(total / PAGE_SIZE) - 1);
+  const maxPage = Math.max(0, Math.ceil(total / pageSize) - 1);
   if (page > maxPage) setPage(maxPage);
- }, [total, page]);
+ }, [total, page, pageSize]);
 
  const [detailId, setDetailId] = useState<string | null>(null);
 
@@ -313,11 +346,55 @@ export function LogsPage() {
     headerName: "Path",
     flex: 2,
     minWidth: 200,
-    renderCell: (params) => (
-     <Typography variant='body2' sx={{ fontFamily: "ui-monospace, monospace", wordBreak: "break-all" }}>
-      {params.value}
-     </Typography>
-    ),
+    renderCell: (params) => {
+     const path = String(params.value ?? "");
+     const skipPattern = suggestSkipPattern(path);
+     const skipped = filters.excludePathPatterns.some((pat) => pathMatchesSkipPattern(path, pat));
+     return (
+      <Box
+       sx={{
+        display: "flex",
+        alignItems: "center",
+        gap: 0.5,
+        width: "100%",
+        minWidth: 0,
+        "& .skip-path-btn": { opacity: 0 },
+        "&:hover .skip-path-btn": { opacity: 1 },
+       }}
+      >
+       <Typography variant='body2' sx={{ fontFamily: "ui-monospace, monospace", wordBreak: "break-all", flex: 1, minWidth: 0 }}>
+        {path}
+       </Typography>
+       {path ? (
+        <Tooltip
+         title={
+          skipped
+           ? "Already covered by a skip pattern"
+           : `Skip *${skipPattern}*`
+         }
+        >
+         <span>
+          <IconButton
+           className='skip-path-btn'
+           size='small'
+           disabled={skipped}
+           aria-label={skipped ? "Path already skipped" : `Skip *${skipPattern}*`}
+           onClick={(e) => {
+            e.stopPropagation();
+            if (skipped || !skipPattern) return;
+            if (filters.excludePathPatterns.includes(skipPattern)) return;
+            patchLogsFilters({ excludePathPatterns: [...filters.excludePathPatterns, skipPattern] });
+           }}
+           sx={{ flexShrink: 0 }}
+          >
+           <BlockIcon fontSize='inherit' />
+          </IconButton>
+         </span>
+        </Tooltip>
+       ) : null}
+      </Box>
+     );
+    },
    },
    {
     field: "status_code",
@@ -351,7 +428,7 @@ export function LogsPage() {
     ),
    },
   ],
-  [offset, rows],
+  [offset, rows, filters.excludePathPatterns],
  );
 
  const closeDetail = () => setDetailId(null);
@@ -397,10 +474,15 @@ export function LogsPage() {
 
  const onPaginationModelChange = useCallback(
   (m: { page: number; pageSize: number }) => {
-   const maxPage = Math.max(0, Math.ceil(total / PAGE_SIZE) - 1);
+   if (m.pageSize !== pageSize) {
+    setPageSize(m.pageSize);
+    setPage(0);
+    return;
+   }
+   const maxPage = Math.max(0, Math.ceil(total / m.pageSize) - 1);
    setPage(Math.min(m.page, maxPage));
   },
-  [total],
+  [total, pageSize],
  );
 
  const gridSx = useMemo(
@@ -452,6 +534,21 @@ export function LogsPage() {
        menuWidth={280}
        disabled={!selected}
       />
+      <MultiSelect
+       label='Skip paths'
+       value={filters.excludePathPatterns}
+       selectedOptions={excludePatternSelectedOptions}
+       onChange={(excludePathPatterns) =>
+        patchLogsFilters({
+         excludePathPatterns: [...new Set(excludePathPatterns.map(normalizeSkipPattern).filter(Boolean))],
+        })
+       }
+       loadOptions={loadExcludePatternOptions}
+       searchPlaceholder='e.g. internal or /cron…'
+       width={160}
+       menuWidth={360}
+       disabled={!selected}
+      />
       <MultiSelect<LogSearchField>
        label='Search in'
        groups={SEARCH_FIELD_GROUPS}
@@ -492,14 +589,15 @@ export function LogsPage() {
     <DataGridTable
      rows={rows}
      columns={columns}
+     getRowId={(row) => row.id}
      loading={gridLoading}
      emptyMessage='No logs for these filters.'
      paginationMode='server'
      sortingMode='server'
      rowCount={total}
-     paginationModel={{ page, pageSize: PAGE_SIZE }}
+     paginationModel={{ page, pageSize }}
      onPaginationModelChange={onPaginationModelChange}
-     pageSizeOptions={[PAGE_SIZE]}
+     pageSizeOptions={[...PAGE_SIZE_OPTIONS]}
      sortModel={sortModel}
      onSortModelChange={onSortModelChange}
      onRowClick={(params) => setDetailId(String(params.id))}

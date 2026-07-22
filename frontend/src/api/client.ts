@@ -1,5 +1,5 @@
 import axios, { type AxiosError } from "axios";
-import type { ApiLog, Caller, Environment, LogDetailData, LogsAnalytics, LogsStats, Project } from "../types";
+import type { ApiLog, Caller, CallerSummary, Environment, LogDetailData, LogsAnalytics, LogsStats, Project, SlowSummary } from "../types";
 
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_URL || "",
@@ -133,6 +133,38 @@ export async function fetchLogsStats(apiKey: string, environment: Environment): 
 export async function fetchLogPaths(apiKey: string, environment: Environment): Promise<string[]> {
   const { data } = await api.get<{ data: string[] }>("/api/v1/logs/paths", {
     headers: logHeaders(apiKey, environment),
+  });
+  return data.data;
+}
+
+export async function fetchSlowSummary(
+  apiKey: string,
+  environment: Environment,
+  params: Record<string, string | number | undefined>,
+): Promise<SlowSummary> {
+  const query: Record<string, string | number> = {};
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== "") query[k] = v;
+  }
+  const { data } = await api.get<{ data: SlowSummary }>("/api/v1/logs/slow-summary", {
+    headers: logHeaders(apiKey, environment),
+    params: query,
+  });
+  return data.data;
+}
+
+export async function fetchCallerSummary(
+  apiKey: string,
+  environment: Environment,
+  params: Record<string, string | number | undefined>,
+): Promise<CallerSummary> {
+  const query: Record<string, string | number> = {};
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== "") query[k] = v;
+  }
+  const { data } = await api.get<{ data: CallerSummary }>("/api/v1/logs/caller-summary", {
+    headers: logHeaders(apiKey, environment),
+    params: query,
   });
   return data.data;
 }
