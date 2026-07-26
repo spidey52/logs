@@ -1,6 +1,6 @@
 {
   "name": "@spidey52/api-logs-sdk",
-  "version": "1.0.9",
+  "version": "1.0.10",
   "description": "Batched API log exporter (axios) + optional Hono / Express middleware",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

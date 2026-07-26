@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import axios, { type AxiosInstance, isAxiosError } from "axios";
 import Redis from "ioredis";
 import type { ApiLogBatchItem, ApiLogEnvironment } from "./types.js";
@@ -25,6 +26,12 @@ function normalizeBaseUrl(url: string): string {
   return url.replace(/\/+$/, "");
 }
 
+/** Stable Redis list name per project key + env so services don't steal each other's batches. */
+function queueKey(apiKey: string, environment: ApiLogEnvironment): string {
+  const hash = createHash("sha256").update(apiKey).digest("hex").slice(0, 16);
+  return `batch:${environment}:${hash}`;
+}
+
 function uploadErrorMessage(e: unknown): string {
   if (isAxiosError(e)) {
     const st = e.response?.status;
@@ -41,7 +48,8 @@ function uploadErrorMessage(e: unknown): string {
 }
 
 /**
- * Queues rows in memory and POSTs to `/api/v1/logs/batch` in chunks of {@link batchSize} (default 100).
+ * Queues rows in Redis and POSTs to `/api/v1/logs/batch` in chunks of {@link batchSize} (default 100).
+ * Each exporter uses a queue keyed by API key + environment so shared Redis stays isolated.
  */
 export class ApiLogExporter {
   readonly batchSize: number;
@@ -50,6 +58,7 @@ export class ApiLogExporter {
   private readonly onError?: ApiLogExporterOptions["onError"];
   private readonly redis: Redis;
   private readonly redisUrl: string;
+  private readonly queueKey: string;
 
   constructor(opts: ApiLogExporterOptions) {
     const baseURL = normalizeBaseUrl(opts.baseUrl);
@@ -58,7 +67,8 @@ export class ApiLogExporter {
     this.onError = opts.onError;
 
     this.redisUrl = opts.redisUrl;
-    this.redis = new Redis(opts.redisUrl, { keyPrefix: "api-logs" });
+    this.queueKey = queueKey(opts.apiKey, opts.environment);
+    this.redis = new Redis(opts.redisUrl, { keyPrefix: "api-logs:" });
 
     this.http =
       opts.axios ??
@@ -75,18 +85,19 @@ export class ApiLogExporter {
   }
 
   async enqueue(item: ApiLogBatchItem): Promise<void> {
-    await this.redis.lpush("batch", JSON.stringify(item));
+    await this.redis.lpush(this.queueKey, JSON.stringify(item));
   }
 
   async flushFullBatches(): Promise<void> {
-    // const logs = await this.redis.lrange("batch", 0, this.batchSize - 1);
+    // const logs = await this.redis.lrange(this.queueKey, 0, this.batchSize - 1);
     // await this.upload(logs.map(JSON.parse) as ApiLogBatchItem[]);
   }
 
   private async startFlushing(): Promise<void> {
-    const redis = new Redis(this.redisUrl, { keyPrefix: "api-logs" });
+    const redis = new Redis(this.redisUrl, { keyPrefix: "api-logs:" });
+    const key = this.queueKey;
     while (true) {
-      const log = await redis.brpop("batch", 0);
+      const log = await redis.brpop(key, 0);
       if (!log) continue;
 
       const batch: ApiLogBatchItem[] = [];
@@ -94,15 +105,14 @@ export class ApiLogExporter {
       const logItem = JSON.parse(log[1]) as ApiLogBatchItem;
       batch.push(logItem);
 
-      // get next batchSize logs
-      const nextLogs = await redis.lpop("batch", this.batchSize);
+      // Drain up to batchSize more from this exporter's queue only.
+      const nextLogs = await redis.lpop(key, this.batchSize);
 
       if (nextLogs?.length) {
-        batch.push(...nextLogs.map((log) => JSON.parse(log) as ApiLogBatchItem));
+        batch.push(...nextLogs.map((row) => JSON.parse(row) as ApiLogBatchItem));
       }
 
       await this.upload(batch);
-
     }
   }
 
